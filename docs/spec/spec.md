@@ -7,14 +7,15 @@
 ## 1. 目标
 
 让 DeepSeek Harness（DSH）会话里的智能体可以**按项目**操作 CI 流水线：
-列出项目声明的流水线、触发、跟踪状态、等待结束、读日志、取消。
+列出项目声明的流水线、触发、查状态、读日志、取消。触发后对话立即空闲，
+阶段变化/结果由后台跟踪通知，不需要模型阻塞等待。
 同一个 DSH 进程里，不同项目的会话互不干扰；插件全局装一次即可。
 
 ## 2. 非目标
 
 - 不做流水线编排/定义管理（流水线在云效 Flow 上建好，这里只操作；本地命令走 shell）。
 - 不做多租户、权限系统（沿用平台 token 的权限）。
-- 不常驻后台轮询（没有定时器；等待由调用方按需发起）。
+- 不做常驻轮询：只有触发后的 `RunWatcher` 在 45 分钟内跟踪（可随 DSH 重启丢失）。
 - 不提供公网回调接收端（回调见平台侧通知插件）。
 
 ## 3. 术语
@@ -25,13 +26,13 @@
 | runId | 本插件生成的运行标识（时间戳-流水线名-随机串） |
 | externalId | 平台侧的运行 id（云效 runId） |
 | 终态 | `succeeded` / `failed` / `canceled` / `lost` 之一 |
-| 预算 | `cicd_wait` 单次调用最多等待的秒数 |
+| 预算 | 内部 `Runner.wait` 单次调用最多等待的秒数（不通过工具暴露） |
 
 ## 4. 角色与场景
 
 | 角色 | 场景 |
 |---|---|
-| 智能体 | 「部署测试环境」→ 触发 → 等结果 → 失败读日志 → 汇报 |
+| 智能体 | 「部署测试环境」→ 触发 → 本轮结束；用户之后问进度/失败时再查状态、读日志、汇报 |
 | 人 | 修改 `.dsh/cicd.json`，下一次工具调用即生效 |
 
 ## 5. 功能需求
@@ -51,14 +52,19 @@
 | 工具 | 职责 | 是否幂等 |
 |---|---|---|
 | `cicd_list` | 列出配置的流水线与最近一次运行 | 是 |
-| `cicd_run` | 触发，立即返回 runId | 否（会真实执行） |
-| `cicd_status` | 查状态；HTTP 类实时回源 | 是 |
+| `cicd_run` | 触发，立即返回 runId；`followUp:true` 时终态唤醒模型 | 否（会真实执行） |
+| `cicd_status` | 查状态（只查一次）；HTTP 类实时回源 | 是 |
 | `cicd_logs` | 读日志尾部（有上限） | 是 |
-| `cicd_wait` | 查一次运行状态（不阻塞） | 是 |
 | `cicd_cancel` | 取消运行 | 否 |
 
 - 标注 `confirm: true` 的流水线，`cicd_run` 必须收到 `confirm: true` 才执行。
-- 工具描述用中文，写清「何时用、何时别用」。
+- **没有等待/轮询工具**：`cicd_run` 返回后本轮结束，不提供 `cicd_wait`；
+  状态查询用 `cicd_status`（每次只查一次，不阻塞）。
+- 工具描述用中文，写清「何时用、何时别用」；`cicd_run` 的输出必须明确要求本轮结束，
+  禁止 `Start-Sleep` / 循环 `cicd_status`。
+- **有后续动作时可以唤醒**：`cicd_run { followUp: true }`（当用户诉求超出「触发」：
+  结束后继续处理，或关注运行中的冲突/异常时）会在终态或首次检测到**合并冲突暂停**时通过
+  `agent.followup()` 唤醒模型继续；默认 `false`，只发 toast。
 
 ### 5.3 运行生命周期与状态
 
@@ -73,7 +79,18 @@
 
 - `cicd_run` 返回后启动 `RunWatcher`：5s 起轮询、逐步退避到 15s、最长 45 分钟；
   阶段变化/终态推 toast，分支冲突暂停时提示手动合并（见 5.14）。
-- `cicd_wait` 只查一次状态，**不阻塞、不等待**；工具不暴露等待模式。
+- `cicd_run` 立即返回，触发后本轮就结束；运行进度由后台跟踪通知（见 5.14）。
+- **不提供等待工具**：状态查询只有 `cicd_status`（每次只查一次，不阻塞）。
+- **followUp 唤醒**（opt-in）：`cicd_run { followUp: true }` 时，`RunWatcher` 在
+  终态（`succeeded/failed`；用户主动取消除外）调用 `onTerminal(record, hint)`，并在**首次检测到
+  合并冲突暂停**时调用 `onConflict(record)`；`cicd_run` 组装一条 `source.kind = dsh-cicd`
+  的 user 消息并调用 `agent.followup()`，把模型唤醒继续用户交代的后续动作（冲突时让模型用
+  `cicd_conflict` 读详情、和用户确认解决）。
+  - 冲突暂停只唤醒一次；解决后运行继续，到终态会再唤醒一次（用户要求继续处理时）；
+  - **用户主动取消不唤醒**：`cicd_cancel` 写入 `canceledByUser`；watcher 仍推 `⛔` 终态 toast，
+    但不调用 `onTerminal`（取消结果已经在工具返回里）。平台侧取消仍按普通终态处理；
+  - `followup` 不存在（旧 DSH）、agent 已释放或 DSH 重启（watcher 丢失）时静默退化为只发 toast；
+  - 唤醒消息只带状态/耗时/冲突/失败提示，并注明「插件自动唤醒，不是用户新发言」；不写死后续业务动作。
 - 内部 `Runner.wait`（预算/退避/错误分级）保留用于测试/未来扩展，不通过工具暴露：
   - 预算：显式 `timeoutSec`（5~300s）优先；否则按上次耗时 `×1.25+20s`，夹 60~300s，默认 180s；
   - 第一次查询立即执行；之后 2s→15s 退避（shell 250ms→2s）；
@@ -105,15 +122,15 @@
 
 `<root>/.dsh/cicd-runs/<runId>.json`（+ shell 的 `.log`）。`json` 至少包含
 `runId / pipeline / title / type / status / startedAt`，完成后补 `finishedAt / durationMs`。
-这些文件是本地运行缓存，**建议 gitignore**（`.dsh/cicd-runs/`、`.dsh/cicd-branches.json`），
-不要提交；发布包也不会包含它们。
+这些文件是本地运行缓存，**插件不写也不改任何 `.gitignore`**，要不要忽略由用户自己决定；
+发布包也不会包含它们。`.dsh/cicd.json` 不受影响，仍应正常提交。
 
 ### 5.9 进度提示（可选，dsh-pet）
 
 - 插件配置 `pet`：默认 `true`；设为 `false` 时完全不产生提示。
 - 多宠物：优先发给 `petId`（设置页“通知宠物”或插件配置），未配置时 `main`，再退到第一只；
   只发一只，不群发。
-- 后台跟踪 `RunWatcher` 在阶段变化/终态投喂气泡（不再由 `cicd_wait` 触发）：
+- 后台跟踪 `RunWatcher` 在阶段变化/终态投喂气泡（由 `cicd_run` 触发）：
   - 阶段变化：`⏳ <title> · <阶段进度>`；
   - 终态：`✅ 执行成功` / `❌ 执行失败` / `⛔ 已取消` / `❓ 状态丢失`。
 - 投喂走 dsh-pet 的公开 HTTP API：`GET /state` 找桌宠（为空时从 `GET /config.pets` 兜底）→
@@ -140,7 +157,7 @@
 - **自动弹窗失败不静默回退**：没有 UI/分支查询失败时取消触发并返回原因，提示改用 `branches`；
   不再默认按旧分支集直接运行。
 - **默认必弹窗**：多分支流水线未显式传 `branches` 时一律弹窗；只有
-  `reusePrevious: true`（用户明确说「沿用上次分支」时）才跳过并直接用上次集合。
+  `reusePrevious: true`（用户明确要求复用上次运行的分支集合时）才跳过并直接用上次集合。
   `interactive: false` 不再跳过（兼容旧参数）。
 - 弹窗优先用插件自绘的 client 弹窗（挂 `shell.overlay`）：
   复选框**默认全选**（勾选 = 保留，取消 = 本次移除），下方输入框新增分支；
@@ -179,13 +196,18 @@
 - `cicd_run` 返回后立即启动 `RunWatcher`（5s 起，逐步退避到 15s；最长跟踪 45 分钟）：
   - 阶段进度变化 → toast/桌宠 `⏳ [env] 标题 · 阶段…`；
   - 终态 → `✅/❌/⛔` 提示；失败时读日志尾部，识别「合并冲突 / 用户已取消」并附在提示里。
+  - 用户通过 `cicd_cancel` 主动取消时仍推终态 toast，但不再唤醒模型（取消结果已在工具返回里）。
 - 同一 `runId` 只跟踪一次；DSH 重启后跟踪器丢失（运行记录仍在，可用 `cicd_status` 查）。
 - **分支集成冲突**：云效把「合并冲突，请解决后继续」写在 job `result` 里，`poll` 会转成
   `record.note`；watcher 检测到 note（或日志里的 `Merge conflicted, job paused`）时推一条
   `⚠️ 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」`（每次运行只推一次）。
-- `cicd_wait` 只查一次状态，**不阻塞、不等待**；不提供 `block` 参数，也不依赖任何项目级约定。
+- **没有等待工具**：`cicd_run` 的输出明确要求「本轮到此结束」，禁止 `Start-Sleep`、
+  循环 `cicd_status` 或任何轮询；结果由后台 toast 通知，用户之后主动问进度时再用 `cicd_status`。
+- **followUp 唤醒**：`followUp: true` 时终态（用户主动取消除外）会调用 `agent.followup()`，
+  首次检测到合并冲突暂停也会调用一次；分别用 `followUpText()` / `conflictWakeText()` 生成
+  「状态/冲突 + runId + 失败提示 + 不是用户新发言」的消息。其他情况只 toast。
 - 多分支流水线**默认必弹窗**：未传 `branches` 且是云效多分支时自动弹；弹窗不可用时**取消触发并报错**
-  （不静默按旧分支跑）；只有显式 `branches` 或 `reusePrevious: true`（用户明确说沿用上次）跳过弹窗。
+  （不静默按旧分支跑）；只有显式 `branches` 或 `reusePrevious: true`（用户明确要求复用上次集合）跳过弹窗。
 
 ### 5.15 通知历史（头部快捷入口）
 
@@ -240,6 +262,7 @@
 | `rawStatus` | 平台原始状态 |
 | `progress` | 云效阶段进度 |
 | `branches` | 云效多分支模式：本次集成的分支列表 |
+| `canceledByUser` | 通过 `cicd_cancel` 取消：仍推终态 toast，但不再唤醒模型 |
 | `checkError` / `checkErrorRetryable` | 最近一次查询错误及是否可重试 |
 | `exitCode` | shell 退出码 |
 
@@ -261,7 +284,7 @@ budgetSec / budgetSource / lastDurationMs / lastError`。
 
 - **安全**：token 不进 `cicd.json`、不进日志、不进 git。
 - **性能**：一次 4 分钟构建的轮询请求 ≤ 20 次（退避后）。
-- **可观测**：每次运行有 json 记录；等待有轮询统计。
+- **可观测**：每次运行有 json 记录；内部 `Runner.wait` 有轮询统计（不暴露给模型）。
 - **兼容**：Node `^22.19.0 || >=24`；运行时只依赖 DSH 注入的
   `@deepseek-ai/dsh-tools` 与 Node 内置模块。
 - **可维护**：strict TypeScript；`pnpm check` 包含类型、测试、文档一致性。
@@ -272,11 +295,14 @@ budgetSec / budgetSource / lastDurationMs / lastError`。
 1. `pnpm check` 全绿（typecheck + 全部测试 + 文档检查）。
 2. 配置错误能给出可直接照做的提示。
 3. 触发→后台通知→成功/失败→日志链路在云效测试环境可复现。
-4. 4 分钟构建期间对话不被阻塞；`cicd_wait` 立即返回当前状态，轮询由后台跟踪完成。
+4. 4 分钟构建期间对话不被阻塞；`cicd_run` 立即返回，且输出明确要求本轮结束、禁止 sleep/轮询。
 5. 401 场景首次查询即停止（`fatal`）；不可达接口 ≤ 4 次后停止（`gave-up`）。
 6. `docs/tools.md` 的工具章节与代码注册的工具完全一致（脚本校验）。
 7. 装 dsh-pet 时，后台跟踪到终态/冲突会投喂气泡；未装时所有工具行为不变。
 8. 多分支流水线：append 模式提交的分支 = 上次运行分支 ∪ 本次新增；replace 模式只提交本次分支。
+9. 当用户诉求超出「触发」（结束后继续处理，或关注冲突/异常）时，`followUp: true` 在终态和
+   首次冲突暂停时唤醒模型；默认 `false` 不唤醒，只发 toast。
+10. 用户通过 `cicd_cancel` 取消后：仍有一条终态 toast，但不会唤醒模型；平台侧取消仍通知。
 
 ## 10. 变更管理
 

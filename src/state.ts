@@ -6,6 +6,8 @@ import type { RunRecord, RunStatus } from './types.js'
  *   <runId>.json  运行记录（状态、退出码、外部 id、链接…）
  *   <runId>.log   shell 流水线的完整输出
  * 索引就是目录本身：按 runId 里的时间前缀排序即可。
+ *
+ * 插件不写也不修改任何 `.gitignore`：要不要忽略这些文件由用户自己决定。
  */
 import {
   existsSync,

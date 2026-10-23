@@ -1,5 +1,5 @@
 import type { AskBranchesOptions } from '../src/prompt.js'
-import type { Project, RunRecord, ToolSpec } from '../src/types.js'
+import type { Project, RunRecord, ToolSpec, WatchHooks } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -24,7 +24,7 @@ function execFor(cwd = root) {
   return { agent: { session: { header: { cwd } } }, signal: new AbortController().signal }
 }
 
-/** block:true 现在必须先经用户确认；测试里用这个 ctx 模拟「同意阻塞」。 */
+/** userQuestions 桩：分支弹窗测试用（返回固定答案）。 */
 function ctxWithConfirm(answer = '阻塞等待到结束') {
   return {
     tools: { register() {} },
@@ -48,6 +48,7 @@ beforeAll(() => {
     pipelines: {
       ping: { type: 'shell', title: 'ping', environment: 'test', tier: 'testing', command: 'node -e "console.log(\'ping-ok\')"' },
       boom: { type: 'shell', title: 'boom', command: 'node -e "console.log(\'boom\'); process.exit(3)"' },
+      slow: { type: 'shell', title: 'slow', command: 'node -e "setTimeout(()=>{}, 5000)"' },
       guarded: { type: 'shell', title: 'guarded', command: 'node -e "console.log(\'guarded\')"', confirm: true },
       multibranch: { type: 'yunxiao', title: '多分支', environment: 'test', tier: 'testing', organizationId: 'ORG', pipelineId: 'P3', tokenEnv: 'YUNXIAO_TOKEN' },
     },
@@ -66,7 +67,7 @@ function runIdOf(text: string) {
   return text.match(/runId:\s+([\w.-]+)/)?.[1] ?? ''
 }
 
-it('注册了七个工具', () => {
+it('注册了六个工具', () => {
   assert.deepEqual(tools.map((t: ToolSpec) => t.name).sort(), [
     'cicd_cancel',
     'cicd_conflict',
@@ -74,7 +75,6 @@ it('注册了七个工具', () => {
     'cicd_logs',
     'cicd_run',
     'cicd_status',
-    'cicd_wait',
   ])
 })
 
@@ -83,7 +83,7 @@ it('cicd_list 列出配置和最近状态', async () => {
   assert.match(result.text, /ping/)
   assert.match(result.text, /boom/)
   assert.match(result.text, /\[test\]/)
-  assert.match(result.text, /流水线：4 条/)
+  assert.match(result.text, /流水线：5 条/)
 })
 
 it('cicd_run 输出环境元数据', async () => {
@@ -111,6 +111,14 @@ it('失败退出码与状态', async () => {
   const { record } = await runner.wait(project, { runId })
   assert.equal(record.status, 'failed')
   assert.equal(record.exitCode, 3)
+})
+
+it('runner.cancel 标记 canceledByUser（用户主动取消不再唤醒）', async () => {
+  const project = resolveProject(execFor(), {})
+  const run = await runner.run(project, 'slow', {})
+  const canceled = await runner.cancel(project, { runId: run.runId })
+  assert.equal(canceled.status, 'canceled')
+  assert.equal(canceled.canceledByUser, true)
 })
 
 it('runner.status：本地已取消的记录不会被平台 FAIL 覆盖', async () => {
@@ -608,31 +616,72 @@ it('cicd_run 会把 branches / branchMode 合进 params', async () => {
   assert.match(result.text, /branches: feat-x/)
 })
 
-it('cicd_wait 只查状态，不阻塞', async () => {
-  let waited = 0
-  const stubRunner = {
-    status: async () => ({
-      runId: 'r1',
-      pipeline: 'ping',
-      title: 'ping',
-      type: 'shell',
-      status: 'running',
-      startedAt: new Date().toISOString(),
-      progress: '阶段 1/2 · 构建（运行中）',
-    }),
-    wait: async () => {
-      waited++
-      throw new Error('should not wait')
+it('cicd_run 返回后明确结束本轮：不等待、不提 block', async () => {
+  const run = await tool('cicd_run').execute({ pipeline: 'ping' }, execFor())
+  assert.match(run.text, /触发完成，本轮到此结束/)
+  assert.match(run.text, /不要等待/)
+  assert.match(run.text, /cicd_status/)
+  assert.doesNotMatch(run.text, /cicd_wait|block/)
+})
+
+it('cicd_run followUp:true 在终态/冲突时唤醒模型，消息带状态和提示', async () => {
+  const captured: WatchHooks[] = []
+  const messages: Array<{ role: string, content: Array<{ type: string, text: string }>, source: { kind: string } }> = []
+  const followTools = buildToolDefinitions({
+    defineTool,
+    runner,
+    options: {},
+    watch: (_project: Project, _record: RunRecord, hooks?: WatchHooks) => {
+      if (hooks)
+        captured.push(hooks)
+    },
+  })
+  const runTool = followTools.find((t: ToolSpec) => t.name === 'cicd_run')
+  const exec = {
+    ...execFor(),
+    agent: {
+      ...execFor().agent,
+      followup: (message: typeof messages[number]) => messages.push(message),
     },
   }
-  const stubTools = buildToolDefinitions({
-    defineTool,
-    runner: stubRunner,
-    options: {},
-    isWatching: () => true,
-  })
-  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_wait').execute({ runId: 'r1' }, execFor())
-  assert.match(result.text, /后台跟踪中/)
-  assert.match(result.text, /不会等待/)
-  assert.equal(waited, 0)
+  const result = await runTool.execute({ pipeline: 'ping', followUp: true }, exec)
+  assert.match(result.text, /自动唤醒/)
+  assert.equal(captured.length, 1)
+
+  const finalRecord = {
+    runId: 'follow-1',
+    pipeline: 'ping',
+    title: 'ping',
+    type: 'shell',
+    status: 'failed',
+    startedAt: new Date().toISOString(),
+    durationMs: 1_200,
+    progress: '阶段 1/2 · 构建（失败）',
+  } as RunRecord
+  captured[0].onTerminal?.(finalRecord, '分支合并冲突')
+  assert.equal(messages.length, 1)
+  assert.equal(messages[0].role, 'user')
+  assert.equal(messages[0].source.kind, 'dsh-cicd')
+  assert.match(messages[0].content[0].text, /后台通知/)
+  assert.match(messages[0].content[0].text, /失败/)
+  assert.match(messages[0].content[0].text, /分支合并冲突/)
+  assert.match(messages[0].content[0].text, /不是用户的新发言/)
+
+  const conflictRecord = {
+    ...finalRecord,
+    status: 'running',
+    durationMs: undefined,
+    progress: '阶段 1/3 · 分支集成（运行中）',
+    note: 'Merge conflicted, job paused',
+  } as RunRecord
+  captured[0].onConflict?.(conflictRecord)
+  assert.equal(messages.length, 2)
+  assert.match(messages[1].content[0].text, /合并冲突/)
+  assert.match(messages[1].content[0].text, /cicd_conflict/)
+  assert.match(messages[1].content[0].text, /不是终态/)
+})
+
+it('cicd_run followUp:true 在旧运行时降级为提示', async () => {
+  const run = await tool('cicd_run').execute({ pipeline: 'ping', followUp: true }, execFor())
+  assert.match(run.text, /不支持自动唤醒/)
 })

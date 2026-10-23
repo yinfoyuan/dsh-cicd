@@ -7,7 +7,7 @@
 
 `dsh-cicd` 是一个 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）插件：
 把「每个项目自己的 CI 流水线」注册成一组 `cicd_*` 工具，让会话里的智能体可以
-列流水线、触发、跟踪、等结果、读日志、取消。
+列流水线、触发、查状态、读日志、取消；触发后本轮结束，由后台跟踪通知进度。
 
 - **插件全局装一次**：`dsh plugin --profile desktop add link:<本仓库路径>`；
 - **配置按项目隔离**：每个项目根 `.dsh/cicd.json`，改完即时生效（按 mtime 缓存）；
@@ -23,7 +23,7 @@
 ```
 src/
   index.ts     插件入口：name / inject / apply（注册工具）
-  tool-defs.ts 七个工具的声明与执行体（不 import dsh-tools，方便测试）
+  tool-defs.ts 六个工具的声明与执行体（不 import dsh-tools，方便测试）
   project.ts   从 exec.agent.session.header.cwd 解析项目根
   config.ts    cicd.json 读取 / 校验 / ${ENV} 展开
   secrets.ts   token 解析（DSH credential-ref 优先，本地 env 回退）
@@ -35,7 +35,7 @@ src/
   state.ts     运行记录 json/log 的落盘与读取
   format.ts    给模型看的文本（清单、运行详情）
   types.ts     共享类型（配置、RunRecord、Provider、WaitMeta…）
-  pet.ts       可选：把等待进度投喂给 dsh-pet 气泡（best-effort）
+  pet.ts       可选：把后台进度投喂给 dsh-pet 气泡（best-effort）
   prompt.ts    通用 userQuestions 回退（勾选 = 取消）
   branch-broker.ts  自定义弹窗的 host 侧 HTTP 通道（/dsh-cicd/branch/*）
   client/index.tsx  浏览器半边：分支弹窗、toast、设置页「流水线配置」、头部通知入口
@@ -73,7 +73,13 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 
 1. **状态只有 5 个值**：`running / succeeded / failed / canceled / lost`。
    平台原始状态放 `record.rawStatus`，不要往 `status` 里塞新值。
-2. **`cicd_wait` 只查一次状态、不阻塞**；不要重新引入等待模式（内部 `Runner.wait` 仅供测试/未来）。
+2. **触发后不等待**：`cicd_run` 立即返回、本轮结束；没有 `cicd_wait` 工具，
+   状态查询用 `cicd_status`（只查一次，不阻塞）。不要重新引入等待/轮询模式，
+   也不要在工具输出里建议 `Start-Sleep` 或循环查询（内部 `Runner.wait` 仅供测试/未来）。
+   当用户诉求超出「触发」（结束后继续处理，或关注运行中的冲突/异常）时用 `followUp: true` +
+   `agent.followup()`（终态 + 首次冲突暂停各唤醒一次），不要用阻塞/轮询实现这个需求。
+   用户通过 `cicd_cancel` 主动取消时（记录带 `canceledByUser`）**保留终态 toast，但不再唤醒模型**，
+   避免「刚取消又被叫醒」；平台侧取消仍按普通终态处理。
    改这块时同步更新 README 与 docs/tools.md。
 3. **token 永远不进 `cicd.json`**；新增平台时沿用 `tokenEnv` 引用。
 4. **工具描述用中文**（和现有风格一致），面向模型，写清楚「什么时候用、什么时候别用」。
@@ -81,7 +87,8 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
    `typescript` / `@types/node` / ESLint 工具链（`eslint`、`@antfu/eslint-config` 等）只在 devDependencies。
 6. **错误要能自解释**：配置错误抛 `ConfigError`（带 `hint`），运行错误抛 `PipelineError`；
    HTTP 错误带 `httpStatus` / `retryable`（见 `providers.ts` 的 `isRetryable`）。
-7. **运行记录只写 `<项目>/.dsh/cicd-runs/`**，不要写全局目录。
+7. **运行记录只写 `<项目>/.dsh/cicd-runs/`**，不要写全局目录；**不要写或修改用户的 `.gitignore`**
+   （项目根的、`.dsh/` 下的都不碰）——要不要忽略运行记录由用户自己决定。
 8. **dsh-pet 集成必须 best-effort**：失败静默、不阻塞工具、可配置 `pet: false` 关闭；
    dsh-pet 不在时行为与没集成完全一致。
 9. **client UI 样式只用 `--dsw-*` 变量**（颜色/圆角/字体），不要写死颜色，明暗主题自动适配；
@@ -91,13 +98,17 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 11. **lint 用 antfu 默认规则**（`@antfu/eslint-config`，`antislop` 开，`ts/no-explicit-any` 为 **error**）：
     优先写具体类型；确属动态边界（第三方 JSON、DSH 上下文、部分实现的测试桩）时，用
     `// eslint-disable-next-line ts/no-explicit-any -- 一句原因` 就地开一处，**不要全局关规则**。
+12. **面向模型的文案用「意图」而不是「固定话术」**：工具 `description` / 参数说明、skill、`docs/tools.md`
+    里判断「什么时候用/传什么」时，描述用户的**诉求/意图**（例如「用户要求运行结束后继续处理」），
+    不要写成「用户说 X 才…」的触发词清单。示例可以留，但必须标成示例（「例如」），不能变成条件。
+    `pnpm check` 会扫描这几份模型面向文案里的固定话术写法。
 
 ## 想改什么，从哪下手
 
 | 想改的事 | 文件 |
 |---|---|
 | 增删工具、改参数/描述 | `src/tool-defs.ts` |
-| 等待预算、退避、错误策略 | `src/runner.ts`（`suggestWaitSec` / `nextPollInterval` / `waitAbortReason`） |
+| 内部等待预算、退避、错误策略（不暴露给模型） | `src/runner.ts`（`suggestWaitSec` / `nextPollInterval` / `waitAbortReason`） |
 | 新平台适配器 | `src/providers.ts` + `src/config.ts` 的 `TYPE_ALIASES` + `types.ts` |
 | 云效多分支模式 | `src/providers.ts`（`isBranchMode` 检测、`CI_SOURCE_BRANCHES` 合并）+ `src/config.ts`（`branchMode`） |
 | 多分支交互选择 | `src/client/index.tsx`（`shell.overlay` 弹窗，默认全选）+ `src/branch-broker.ts`（HTTP 通道）+ `src/tool-defs.ts`（`interactive` / `preview`） |
@@ -107,7 +118,8 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 | 配置生成 skill | `src/skill.ts`（`ctx.skills.register`，`cicd-config`）+ `test/skill.test.ts` |
 | 输出文案 | `src/format.ts` |
 | 进度提示（toast / 桌宠） | `src/client/index.tsx`（toast 组件）+ `src/branch-broker.ts`（notices 队列）+ `src/pet.ts`（dsh-pet，best-effort） |
-| 后台跟踪/主动提示 | `src/watcher.ts`（5s→15s 轮询、冲突识别）+ `src/client/index.tsx`（toast） |
+| 后台跟踪/主动提示 | `src/watcher.ts`（5s→15s 轮询、冲突识别、终态 `onTerminal`）+ `src/client/index.tsx`（toast） |
+| 终态/冲突唤醒（followUp） | `src/watcher.ts`（`onTerminal` / `onConflict`）+ `src/tool-defs.ts`（`followUp` 参数、`agent.followup()`）+ `src/format.ts`（`followUpText` / `conflictWakeText`） |
 | 冲突信息读取 | `src/conflict.ts`（日志解析）+ `src/tool-defs.ts`（`cicd_conflict`，只读，不自动恢复） |
 | 通知历史（头部入口） | `src/branch-broker.ts`（`/notices/history` + clear + `$DSH_HOME/cicd-notices.json`）+ `src/client/index.tsx`（头部 popover） |
 | 设置页配置（组织/流水线/token/prefs） | `src/config-service.ts`（`/dsh-cicd/config/*`）+ `src/settings-store.ts` + `src/client/index.tsx`（`settings.section`） |
@@ -166,6 +178,7 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 - [ ] `docs/spec/spec.md` 与当前行为一致
 - [ ] 影响架构的改动有 ADR，`docs/adr/README.md` 索引已更新
 - [ ] `docs/tools.md` 与工具面一致（脚本校验）
+- [ ] 面向模型的判断条件用意图描述，没有「用户说 X 才…」这类固定话术（脚本校验）
 - [ ] 没有把 token、内网地址、运行记录提交进去
 - [ ] `lib/` 不进 git（已 gitignore，发布时自动构建）
 

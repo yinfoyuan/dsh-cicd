@@ -45,7 +45,8 @@
 ## cicd_run
 
 触发一条流水线，**立即返回** `runId`（异步，不阻塞）。触发后插件会自动开始**后台跟踪**：
-阶段变化/结束会通过 client toast（或 dsh-pet）提示，用户可以继续对话，**不需要**立刻 `cicd_wait`。
+阶段变化/结束会通过 client toast（或 dsh-pet）提示。**触发完成本轮就结束**：模型直接回复用户，
+不要用 `Start-Sleep`、循环 `cicd_status` 等方式等待结果；用户之后主动问进度时再用 `cicd_status`。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -53,15 +54,28 @@
 | `params` | json | | 传给平台的参数（分支、环境变量等） |
 | `branches` | json | | 云效多分支模式：本次要新增/替换的运行分支列表 |
 | `branchMode` | string | | 多分支处理方式：`append`（默认）或 `replace` |
-| `reusePrevious` | boolean | | 仅当用户明确说「沿用上次分支」时传 `true`：跳过弹窗，直接用上次集合 |
+| `reusePrevious` | boolean | | 当用户明确要复用上次运行的分支集合时传 `true`：跳过弹窗，直接用上次集合 |
 | `interactive` | boolean | | 已弃用：默认就是弹窗；`false` 也不会跳过（只有 `reusePrevious:true` 跳过） |
 | `preview` | boolean | | 配合弹窗：只选分支并返回，不触发 |
 | `confirm` | boolean | | `confirm: true` 的流水线必须显式传 `true` |
+| `followUp` | boolean | | 当用户诉求超出「触发」时传 `true`：结束后继续处理，或关注运行中的冲突/异常；只触发不传 |
+
+当用户在「触发」之外还有后续诉求时（例如运行结束后部署、失败后分析日志、关注合并冲突），
+传 `followUp: true`：触发后本轮仍立即结束，运行到终态或首次检测到合并冲突时，插件会用
+`agent.followup()` 唤醒模型，发一条带状态/耗时/冲突提示的消息，模型再按上下文继续做
+（冲突时用 `cicd_conflict` 读详情）。
+不要为了「等结果」传它；不传时只发 toast，用户之后可以再问。
 
 示例：
 
 ```json
 { "pipeline": "deploy-test", "params": { "branch": "main" }, "confirm": true }
+```
+
+需要跟进运行结果或冲突时：
+
+```json
+{ "pipeline": "build", "followUp": true }
 ```
 
 云效多分支模式示例（把 `feature/login` 加进上次已集成的分支集）：
@@ -74,14 +88,23 @@
 
 ## cicd_status
 
-查一次运行的状态；不传 `runId` 时查某条流水线最近一次。
+查一次运行的状态，**只查一次、不阻塞**；不传 `runId` 时查某条流水线最近一次。
 
 | 参数 | 类型 | 说明 |
 |---|---|---|
 | `runId` | string | 运行 id |
 | `pipeline` | string | 不传 runId 时，按流水线名查最近一次 |
 
-云效会**实时回源**（每次调用打一次平台接口）。
+云效会**实时回源**（每次调用打一次平台接口）。不要在 `cicd_run` 之后循环调用它等结果——
+运行结束会由后台跟踪通知。
+
+行为：
+
+- 只返回当前 `status/progress/note`，**不等待**；已结束的运行直接返回终态；
+- 后台跟踪（`cicd_run` 触发后）：阶段变化推 `⏳`；分支集成**冲突暂停**时推
+  `⚠️ 需要手动合并：请在云效解决冲突后点「Conflict Resolved」`；结束推 `✅/❌`；
+  失败时若日志里有「合并冲突 / 用户已取消」会在提示里点明；
+- 想看历史提示，点会话头部右上角的消息图标。
 
 ## cicd_logs
 
@@ -120,41 +143,14 @@
 3. 由用户回云效运行页点「Conflict Resolved」；
 4. 恢复后后台跟踪继续通知；插件不会自动点按钮。
 
-## cicd_wait
-
-查看一次运行状态。**只查一次，不阻塞、不等待**；运行结束由后台跟踪通知。
-不要用它跟踪运行，也不要在 `cicd_run` 之后自动调用。
-
-| 参数 | 类型 | 必填 | 说明 |
-|---|---|---|---|
-| `runId` | string | ✅ | 运行 id |
-
-行为：
-
-- 返回 `status/progress/note` + 提示，不占用对话；
-- 已结束的运行直接返回终态；
-- **后台跟踪**（`cicd_run` 触发后）：阶段变化推 `⏳`；分支集成**冲突暂停**时推
-  `⚠️ 需要手动合并：请在云效解决冲突后点「Conflict Resolved」`；结束推 `✅/❌`；
-  失败时若日志里有「合并冲突 / 用户已取消」会在提示里点明；
-- 想主动查进度用 `cicd_status`；想看历史提示打开「设置 → 流水线通知」。
-
-示例输出：
-
-```
-✅ deploy-test · succeeded
-progress:  阶段 2/2 · 部署（成功）
-
-这次运行已经结束。
-本工具只查一次状态，不会等待。
-```
-
 ## cicd_cancel
 
 取消一次运行：shell 结束整个进程树（Windows 用 `taskkill /t /f`）；
 平台类调用平台取消接口（云效是 `PUT .../runs/{runId}`）。
 
-取消后本地状态固定为 `canceled`；后台跟踪会推 `⛔ … 已取消`（即使云效事后把 run 标成 `FAIL`
-或 job result 写「用户已取消」，也按取消处理）。
+取消后本地状态固定为 `canceled`；**仍会推一条 `⛔ 已取消` 的终态 toast，但不再唤醒模型**
+（取消结果已经在工具返回里）。平台侧取消（不是通过本工具）也按普通终态通知；
+即使云效事后把 run 标成 `FAIL` 或 job result 写「用户已取消」，也按取消处理。
 
 | 参数 | 类型 | 必填 |
 |---|---|---|
@@ -173,7 +169,8 @@ progress:  阶段 2/2 · 部署（成功）
 - 默认 **append**：上次运行集成的分支（云效全局变量 `CI_SOURCE_BRANCHES`）+ 本次 `branches`，
   按顺序去重后作为 `branchModeBranchs` 提交；
 - `branchMode: "replace"`：只用本次 `branches`；
-- 不传 `branches`：沿用上次的分支集，相当于网页端「再次运行」；
+- 不传 `branches`：多分支流水线会弹窗确认（默认集合含上次分支）；只有 `reusePrevious: true`
+  且用户明确要复用上次集合时才直接沿用；
 - 非多分支流水线传 `branches` / `branch` 会直接报错（避免看起来成功其实没带分支）；
 - 配置里可写 `"branchMode": "append" | "replace" | "off"` 设默认；`off` 表示完全不处理，按原始 params 透传。
 
@@ -193,7 +190,7 @@ progress:  阶段 2/2 · 部署（成功）
 { "pipeline": "admin-multibranch", "confirm": true }
 ```
 
-只有用户**明确说「沿用上次分支」**时才跳过弹窗：
+当用户明确要复用上次运行的分支集合（不需要重新挑选）时，才用 `reusePrevious` 跳过弹窗：
 
 ```json
 { "pipeline": "admin-multibranch", "reusePrevious": true, "confirm": true }
@@ -210,22 +207,26 @@ progress:  阶段 2/2 · 部署（成功）
 
 ## 进度提示（可选：客户端 toast / dsh-pet）
 
-`cicd_wait` 结束/超时后，插件会尝试两种提示，都是 **best-effort**（失败静默、不阻塞工具）：
+`cicd_run` 触发后，后台跟踪 `RunWatcher` 会主动提示阶段变化和终态（**不依赖**任何等待工具），
+两种提示都是 **best-effort**（失败静默、不阻塞工具）：
 
 1. **插件自带 toast**（推荐，不依赖第三方）：client 半边在右上角弹卡片，6 秒自动消失，点击可关闭；
 2. **dsh-pet 气泡**：装了 dsh-pet 时再投喂一份。
 
 | 场景 | 文案 |
 |---|---|
-| 等待超时 / 仍在运行 | `⏳ 示例-部署 还在执行（已等 3m12s） · 阶段 2/2 · 部署（运行中）` |
-| 成功 | `✅ 示例-部署 执行成功（3m36s）` |
-| 失败 | `❌ 示例-部署 执行失败（52s）` |
-| 取消 | `⛔ 示例-部署 已取消` |
+| 阶段变化 | `⏳ [test] 示例-部署 · 阶段 2/2 · 部署（运行中）` |
+| 成功 | `✅ [test] 示例-部署 执行成功（3m36s）` |
+| 失败 | `❌ [test] 示例-部署 执行失败（52s）` |
+| 取消 | `⛔ [test] 示例-部署 已取消` |
 
 实现：
+- 用户通过 `cicd_cancel` 主动取消时**仍推终态 toast，只是不再唤醒模型**（避免刚取消又被叫醒）；
 - toast：`GET /dsh-cicd/notices?since=N` 增量拉取；首次连接只同步序号，不重放历史；
 - pet：`POST /dsh-pet-7340/broadcast { text }`，1.5s 超时；
 - 关闭桌宠：配置 `pet: false`；toast 不依赖它，仍然保留。
+- `followUp: true` 时，终态和首次检测到合并冲突暂停还会用 `agent.followup()` 唤醒模型
+  （不是每次阶段变化都唤醒）。
 
 ## 运行记录
 
@@ -236,14 +237,16 @@ progress:  阶段 2/2 · 部署（成功）
 <runId>.log    # 仅 shell 流水线的完整输出
 ```
 
-建议把 `.dsh/cicd-runs/` 加进项目 `.gitignore`。
+插件**不写也不改任何 `.gitignore`**：要不要忽略这些记录由用户自己决定（例如自己加一行
+`.dsh/cicd-runs/`）。`.dsh/cicd.json` 不受影响。
 
 ## 典型调用顺序
 
 ```
 cicd_list                        # 看有哪些
-  → cicd_run { pipeline }        # 触发，拿 runId
-  → cicd_wait { runId }          # 等结束（可重复调用）
+  → cicd_run { pipeline }        # 触发，拿 runId；本轮到此结束
+                                  # 有后续动作时加 followUp:true，终态自动唤醒
+  → cicd_status { runId }        # 用户之后主动问进度时查一次
   → cicd_logs { runId }          # 失败时看日志
   → cicd_cancel { runId }        # 需要中止时
 ```

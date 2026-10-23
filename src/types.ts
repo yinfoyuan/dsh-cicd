@@ -106,6 +106,8 @@ export interface RunRecord {
   buildUrl?: string
   /** 云效多分支模式：本次集成/运行的分支列表。 */
   branches?: string[]
+  /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
+  canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */
   environment?: string
   tier?: EnvironmentTier
@@ -170,9 +172,31 @@ export interface WaitResult {
   meta: WaitMeta
 }
 
+/** `cicd_run followUp: true` 时，后台终态/冲突唤醒模型用的一条 user 角色消息。 */
+export interface FollowUpMessage {
+  id: string
+  role: 'user'
+  content: Array<{ type: 'text', text: string }>
+  source: { kind: string }
+}
+
+/** 后台跟踪在关键节点回调给 `cicd_run`，由它决定是否唤醒模型。 */
+export interface WatchHooks {
+  /** 终态：succeeded / failed / canceled；hint 是失败日志里的冲突/取消提示。 */
+  onTerminal?: (record: RunRecord, hint?: string) => void
+  /** 分支集成检测到合并冲突、运行暂停（不是终态）。每次运行只回调一次。 */
+  onConflict?: (record: RunRecord) => void
+}
+
+/** DSH Agent 句柄里插件用到的部分（`followup` 由 DSH 运行时提供，旧版本可能没有）。 */
+export interface ToolAgent {
+  session?: { header?: { cwd?: string } }
+  followup?: (message: FollowUpMessage) => void
+}
+
 /** DSH 工具执行上下文（只用到 cwd / agent / signal）。 */
 export interface ToolRunContext {
-  agent?: { session?: { header?: { cwd?: string } } }
+  agent?: ToolAgent
   signal?: AbortSignal
 }
 

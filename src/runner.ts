@@ -62,7 +62,7 @@ export class ConfirmRequired extends Error {
 
 const sleep = (ms: number): Promise<void> => new Promise<void>(resolveSleep => setTimeout(resolveSleep, ms))
 
-/** cicd_wait 的默认/最大等待预算（秒）。 */
+/** 内部 `Runner.wait` 的默认/最大等待预算（秒）；不通过工具暴露。 */
 export const DEFAULT_WAIT_SEC = 180 // 没有历史耗时时的默认值：3 分钟
 export const MAX_WAIT_SEC = 300
 /** 等待时最多容忍连续几次查询失败（之后停止等待，别再空耗预算）。 */
@@ -353,6 +353,7 @@ export class Runner {
       }
       else if (meta.canceled) {
         rec.status = 'canceled'
+        rec.canceledByUser = true
       }
       else if (meta.timedOut) {
         rec.status = 'failed'
@@ -626,9 +627,9 @@ export class Runner {
       if (meta) {
         meta.canceled = true
         this.#kill(record.runId)
-        return { ...record, status: 'canceled' }
+        return { ...record, status: 'canceled', canceledByUser: true }
       }
-      const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: '没有找到活动子进程，已标记为取消' }
+      const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: '没有找到活动子进程，已标记为取消', canceledByUser: true }
       saveRecord(project.runsDir, next)
       return next
     }
@@ -638,7 +639,7 @@ export class Runner {
       throw new PipelineError(`流水线「${record.pipeline}」已从配置里移除，无法取消。`)
     const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
     const out = await provider.cancel(record)
-    const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: out?.note ?? '' }
+    const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: out?.note ?? '', canceledByUser: true }
     saveRecord(project.runsDir, next)
     return next
   }

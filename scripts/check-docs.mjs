@@ -6,7 +6,9 @@
  *   1. 必需文档存在（README / AGENTS / docs/{README,tools} / spec / ADR 索引）；
  *   2. 每篇 ADR 有标题、状态、背景/决策/后果，且被索引列出；
  *   3. docs/tools.md 的 `## cicd_*` 章节与代码注册的工具完全一致；
- *   4. 文档里的相对链接都能解析到真实文件。
+ *   4. 模型面向文案里的触发条件用意图描述，不写「用户说 X」这类固定话术；
+ *   5. 文档里的相对链接都能解析到真实文件。
+ *   6. AGENTS.md 指向规格与 ADR 索引。
  *
  * 由 `pnpm check` 调用；不通过就退出码 1。
  */
@@ -79,7 +81,18 @@ for (const name of documented) {
   check(toolNames.includes(name), `docs/tools.md 多出代码里不存在的工具章节：## ${name}`)
 }
 
-/* 4. 相对链接 */
+/* 4. 模型面向文案：触发条件用意图描述，不用固定用户话术 */
+const PROSE_FILES = ['src/tool-defs.ts', 'src/skill.ts', 'docs/tools.md', 'README.md']
+const FIXED_PHRASE_RE = /用户(?:明确)?说\s*[「“"']/g
+for (const rel of PROSE_FILES) {
+  if (!existsSync(join(root, rel)))
+    continue
+  const text = read(rel)
+  const hits = [...text.matchAll(FIXED_PHRASE_RE)].map(match => match[0].replace(/\s+/g, ' '))
+  check(hits.length === 0, `${rel}：触发/适用条件要用意图描述（例如「用户要求结束后继续处理」），不要写 ${hits.join('、')} 这类固定话术`)
+}
+
+/* 5. 相对链接 */
 const mdFiles = [
   'README.md',
   'AGENTS.md',
@@ -106,7 +119,7 @@ for (const rel of mdFiles) {
   }
 }
 
-/* 5. AGENTS.md 必须指向规格与 ADR（让智能体知道去哪看） */
+/* 6. AGENTS.md 必须指向规格与 ADR（让智能体知道去哪看） */
 if (existsSync(join(root, 'AGENTS.md'))) {
   const agents = read('AGENTS.md')
   check(agents.includes('docs/spec/spec.md'), 'AGENTS.md 没有指向 docs/spec/spec.md')

@@ -9,14 +9,14 @@ import type { DefineTool, PluginContext, PluginOptions, ToolSpec } from './types
  * 各自看到各自的流水线。
  *
  * 注册的工具：
- *   cicd_list / cicd_run / cicd_status / cicd_logs / cicd_wait / cicd_cancel
+ *   cicd_list / cicd_run / cicd_status / cicd_logs / cicd_conflict / cicd_cancel
  *
  * @module dsh-cicd
  */
 import { defineTool as dshDefineTool } from '@deepseek-ai/dsh-tools'
 import { BranchBroker } from './branch-broker.js'
 import { ConfigService } from './config-service.js'
-import { createPetNotifier, petMessage } from './pet.js'
+import { createPetNotifier } from './pet.js'
 import { askBranches } from './prompt.js'
 import { Runner } from './runner.js'
 import { readGlobalSettings } from './settings-store.js'
@@ -64,13 +64,6 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
   const branchDialog = (dialogOptions: AskBranchesOptions): Promise<BranchChoice> =>
     branchBroker.hasClient() ? branchBroker.ask(dialogOptions) : askBranches(ctx, dialogOptions)
 
-  // 等待结束/超时的轻量提示：dsh-pet 气泡之外，再推一条自绘 client toast。
-  const notice = (record: Parameters<typeof petMessage>[0], meta: Parameters<typeof petMessage>[1]): void => {
-    const text = petMessage(record, meta)
-    if (text)
-      branchBroker.notify(text, 'info', record.projectRoot, record.runId)
-  }
-
   // 触发后的后台跟踪：阶段变化/结束主动提示，不阻塞对话。
   const watcher = new RunWatcher(runner, {
     notice: (text, project, runId) => {
@@ -87,12 +80,9 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
       defineTool,
       runner,
       options,
-      notify,
       ctx,
       branchDialog,
-      notice,
-      watch: (project, record) => watcher.watch(project, record),
-      isWatching: runId => watcher.isWatching(runId),
+      watch: (project, record, hooks) => watcher.watch(project, record, hooks),
     })
   }
   catch (error) {

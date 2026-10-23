@@ -1,6 +1,6 @@
 # ADR-0014: 触发后后台跟踪，`cicd_wait` 只做显式阻塞
 
-- 状态：Accepted
+- 状态：Accepted（其中 `cicd_wait` 的结论已被 [ADR-0018](./0018-remove-cicd-wait.md) 取代）
 - 日期：2026-10-22
 
 ## 背景

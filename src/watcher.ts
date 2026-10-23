@@ -1,10 +1,12 @@
 import type { Runner } from './runner.js'
-import type { Project, RunRecord } from './types.js'
+import type { Project, RunRecord, WatchHooks } from './types.js'
 /**
  * 后台跟踪器：`cicd_run` 返回后继续轮询，阶段变化/结束主动提示。
  *
- * 目的：不让 `cicd_wait` 把对话卡住。用户触发后可以继续工作，
- * 运行有进展或结束时通过 client toast / dsh-pet 气泡通知。
+ * 目的：`cicd_run` 触发后对话立即空闲（不等待、不 sleep），
+ * 运行有进展或结束时通过 client toast / dsh-pet 气泡通知；
+ * `followUp: true` 时终态调用 `onTerminal`、首次检测到合并冲突调用 `onConflict`，
+ * 由调用方唤醒模型继续后续动作。
  */
 import { durationText } from './runner.js'
 
@@ -57,7 +59,7 @@ export class RunWatcher {
   }
 
   /** 开始跟踪一次运行；同一个 runId 只跟踪一次。 */
-  watch(project: Project, record: RunRecord): void {
+  watch(project: Project, record: RunRecord, hooks?: WatchHooks): void {
     if (this.#disposed || this.#timers.has(record.runId))
       return
     const startedAt = Date.now()
@@ -65,6 +67,7 @@ export class RunWatcher {
     let delay = FIRST_DELAY_MS
     let lastLogCheck = 0
     let conflictNotified = false
+    let hint = ''
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
     const tick = async (): Promise<void> => {
@@ -84,6 +87,8 @@ export class RunWatcher {
 
       const terminal = current.status !== 'running' && current.status !== 'lost'
       if (terminal) {
+        // 用户主动取消：终态 toast 保留，但不再唤醒模型（取消结果已经在 `cicd_cancel` 的返回里）。
+        const userCanceled = current.status === 'canceled' && current.canceledByUser === true
         let text = current.status === 'succeeded'
           ? `✅ ${label(current)} 执行成功（${durationText(current.durationMs ?? 0)}）`
           : current.status === 'failed'
@@ -95,7 +100,7 @@ export class RunWatcher {
         if (current.status === 'failed') {
           try {
             const log = await this.#runner.logs(project, { runId: current.runId, tailLines: 120, maxChars: 12_000 })
-            const hint = failureHint(log)
+            hint = failureHint(log)
             if (hint)
               text += ` · ${hint}`
           }
@@ -105,6 +110,14 @@ export class RunWatcher {
           this.#options.notice(text, project.root, current.runId)
         }
         catch {}
+        // 只有 `cicd_run followUp: true` 才会传回调：终态唤醒模型继续用户交代的后续动作。
+        // 用户主动取消不唤醒，避免「刚取消又被叫醒」；toast 仍然保留。
+        if (!userCanceled) {
+          try {
+            hooks?.onTerminal?.(current, hint)
+          }
+          catch {}
+        }
         return
       }
 
@@ -118,27 +131,29 @@ export class RunWatcher {
 
       // 分支集成阶段可能「暂停等人工合并」：日志里出现冲突标记时主动提示一次。
       // 云效把冲突写进 job result（provider 会转成 record.note）：优先用它，避免多打日志接口。
-      const note = String(current.note ?? '')
-      if (!conflictNotified && /合并冲突|Conflict Resolved|Merge conflicted/i.test(note)) {
+      const announceConflict = (): void => {
         conflictNotified = true
         try {
           this.#options.notice(`⚠️ ${label(current)} 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」（不要退出流水线）。`, project.root, current.runId)
         }
         catch {}
+        // 冲突暂停不是终态，但用户可能正是在关注冲突：按 followUp 约定唤醒一次。
+        try {
+          hooks?.onConflict?.(current)
+        }
+        catch {}
       }
+      const note = String(current.note ?? '')
+      if (!conflictNotified && /合并冲突|Conflict Resolved|Merge conflicted/i.test(note))
+        announceConflict()
 
       // 没有 note 时再从日志里兜底识别（兼容老数据/其他平台）。
       if (!conflictNotified && Date.now() - lastLogCheck >= 15_000) {
         lastLogCheck = Date.now()
         try {
           const log = await this.#runner.logs(project, { runId: current.runId, tailLines: 120, maxChars: 12_000 })
-          if (mergeConflictPending(log)) {
-            conflictNotified = true
-            try {
-              this.#options.notice(`⚠️ ${label(current)} 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」（不要退出流水线）。`, project.root, current.runId)
-            }
-            catch {}
-          }
+          if (mergeConflictPending(log))
+            announceConflict()
         }
         catch {}
       }
@@ -160,11 +175,6 @@ export class RunWatcher {
     this.#timers.set(record.runId, setTimeout(() => {
       void tick()
     }, delay))
-  }
-
-  /** 这个 run 是否还在后台跟踪（用于把 cicd_wait 默认改成非阻塞）。 */
-  isWatching(runId: string): boolean {
-    return this.#timers.has(runId)
   }
 
   dispose(): void {
