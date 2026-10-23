@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "defaults": {
+    "timeoutSec": 900,
+    "logTailLines": 120,
+    "maxConcurrent": 4
+  },
+  "pipelines": {
+    "ping": {
+      "type": "shell",
+      "title": "连通性自检",
+      "command": "node -e \"console.log('pipeline ok')\"",
+      "timeoutSec": 30
+    },
+    "type-check": {
+      "type": "shell",
+      "title": "TypeScript 类型检查",
+      "command": "pnpm type-check",
+      "timeoutSec": 900
+    },
+    "build": {
+      "type": "shell",
+      "title": "生产构建",
+      "command": "pnpm build",
+      "timeoutSec": 1800
+    }
+  }
+}

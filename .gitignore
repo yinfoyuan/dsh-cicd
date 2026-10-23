@@ -1,0 +1,19 @@
+node_modules/
+.DS_Store
+*.log
+coverage/
+
+# TypeScript 构建产物（npm 发布时由 prepack 重新生成）
+lib/
+
+# 插件自身的示例项目运行记录
+examples/**/.dsh/cicd-runs/
+
+# 本地密钥与本地流水线运行记录
+.dsh/
+
+# husky 生成的内部 hook
+.husky/_/
+
+# ESLint 缓存
+.eslintcache

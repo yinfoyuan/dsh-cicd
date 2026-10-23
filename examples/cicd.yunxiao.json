@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "pipelines": {
+    "deploy-test": {
+      "type": "yunxiao",
+      "title": "部署测试环境",
+      "description": "云效 Flow 流水线，ID 从流水线链接里取",
+      "url": "https://devops.aliyun.com/flow/pipeline/123456",
+      "organizationId": "5ebbc0228123212b59xxxxx",
+      "tokenEnv": "YUNXIAO_TOKEN",
+      "environment": "test",
+      "tier": "testing",
+      "params": {
+        "envs": { "DEPLOY_ENV": "test" }
+      },
+      "confirm": true
+    },
+    "deploy-prod": {
+      "type": "yunxiao",
+      "title": "部署生产环境",
+      "pipelineId": "654321",
+      "organizationId": "5ebbc0228123212b59xxxxx",
+      "tokenEnv": "YUNXIAO_TOKEN",
+      "environment": "production",
+      "tier": "production",
+      "confirm": true
+    }
+  }
+}

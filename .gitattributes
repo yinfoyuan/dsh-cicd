@@ -1,0 +1,18 @@
+# 统一换行：仓库里一律用 LF，检出时也不按平台转成 CRLF。
+# 目的：CI（Linux）和本地（Windows）拿到同一份字节，避免整文件 diff 和
+# 脚本 shebang 损坏（.husky 钩子、scripts/*.mjs 在 Linux 上才算数）。
+* text=auto eol=lf
+
+# Windows 批处理必须 CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制：不要做任何换行/编码转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.tgz binary

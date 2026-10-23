@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "noEmitOnError": false,
+    "sourceMap": false,
+    "skipLibCheck": true
+  },
+  // 只 include test；import 到的 src 模块会随依赖图一起被检查（src 本身由根 tsconfig 全量检查）
+  "include": ["**/*.ts"],
+  "exclude": ["../lib", "../node_modules"]
+}

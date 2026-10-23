@@ -1,0 +1,17 @@
+# dsh-cicd：每个项目自己的 CI/CD 流水线
+#
+# 装上之后，所有项目共享这套工具；每个项目用 <项目根>/.dsh/cicd.json
+# 声明自己的流水线（ID、类型、token 环境变量）。改配置不用重启。
+#
+# 可选配置（都可以不写，用默认值）：
+#   configFile: .dsh/cicd.json   # 相对项目根
+#   runsDir:    .dsh/cicd-runs    # 运行记录与日志，建议 gitignore
+#   pet:        true                  # 把等待进度投喂给 dsh-pet 气泡（装了 dsh-pet 才有效）
+- insert:
+    - id: cicd
+      name: dsh-cicd
+      inject: [tools]
+      config:
+        configFile: .dsh/cicd.json
+        runsDir: .dsh/cicd-runs
+        pet: true
