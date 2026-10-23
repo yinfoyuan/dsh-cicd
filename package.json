@@ -1,7 +1,7 @@
 {
   "name": "dsh-cicd",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Per-project CI/CD pipelines for DeepSeek Harness: list, trigger, track, read logs, and cancel. Currently ships an Alibaba Cloud DevOps (Yunxiao Flow) adapter.",
   "author": "yinfoyuan",
   "license": "MIT",
