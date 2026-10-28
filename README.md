@@ -171,6 +171,25 @@ CI / 无界面场景可用进程环境变量；插件**不再读取**项目里�
 - 只有显式传 `branches`，或用户明确要求复用上次运行的分支集合时才跳过弹窗；
 - 弹窗不可用会直接报错，不会静默按旧分支触发。
 
+## 运行参数（云效）
+
+触发时可以带云效的运行参数，不用把它们塞进 `params`：
+
+```json
+{
+  "pipeline": "deploy-test",
+  "comment": "发版 1.2.3",
+  "envs": { "APP_ENV": "test" },
+  "tags": { "https://codeup.aliyun.com/<org>/<repo>.git": "1.2.3" },
+  "artifacts": { "pipeline": { "<pipelineId>": "12" } }
+}
+```
+
+- `comment`：运行备注；`envs`：运行变量；
+- `tags` / `repoBranches`：key 是仓库地址，分别指定运行的 tag / 分支（多分支模式的 `branches` 是另一回事）；
+- `artifacts`：`pipeline` / `acr` / `packages` 三类制品版本；
+- 与 `params` 合并，命名参数优先（整体覆盖，不做深合并）；只支持云效流水线。
+
 ## 通知
 
 - 阶段变化：`⏳ [test] 标题 · 阶段…`

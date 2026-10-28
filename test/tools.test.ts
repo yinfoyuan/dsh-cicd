@@ -685,3 +685,101 @@ it('cicd_run followUp:true 在旧运行时降级为提示', async () => {
   const run = await tool('cicd_run').execute({ pipeline: 'ping', followUp: true }, execFor())
   assert.match(run.text, /不支持自动唤醒/)
 })
+
+it('cicd_run 云效运行参数：comment/envs/tags/repoBranches/artifacts 映射成平台 params', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubRunner = {
+    run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+      captured = opts.params
+      return {
+        runId: 'r1',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }
+    },
+  }
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: stubRunner,
+    options: {},
+    ctx: { tools: { register() {} } },
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run').execute({
+    pipeline: 'multibranch',
+    comment: 'deploy from chat',
+    envs: { APP_ENV: 'test', RETRIES: 2, DEBUG: true },
+    tags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    repoBranches: { 'https://codeup.aliyun.com/demo/repo.git': 'release' },
+    artifacts: {
+      pipeline: { 3184679: '12' },
+      acr: { 'registry.example.com/app': 'tag-1' },
+      packages: { 'generic/repo/pkg': '1.2.3' },
+    },
+  }, execFor())
+  assert.deepEqual(captured, {
+    comment: 'deploy from chat',
+    envs: { APP_ENV: 'test', RETRIES: '2', DEBUG: 'true' },
+    runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    runningBranchs: { 'https://codeup.aliyun.com/demo/repo.git': 'release' },
+    runningPipelineArtifacts: { 3184679: '12' },
+    runningAcrArtifacts: { 'registry.example.com/app': 'tag-1' },
+    runningPackagesArtifacts: { 'generic/repo/pkg': '1.2.3' },
+  })
+})
+
+it('cicd_run 云效运行参数：命名参数覆盖 params 里的同名 key', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubRunner = {
+    run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+      captured = opts.params
+      return {
+        runId: 'r2',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }
+    },
+  }
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: stubRunner,
+    options: {},
+    ctx: { tools: { register() {} } },
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run').execute({
+    pipeline: 'multibranch',
+    params: { comment: 'old', envs: { A: '1' } },
+    comment: 'new',
+    envs: { B: '2' },
+  }, execFor())
+  assert.deepEqual(captured, { comment: 'new', envs: { B: '2' } })
+})
+
+it('cicd_run 云效运行参数：shell 流水线明确报错', async () => {
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'ping', comment: 'x' }, execFor()),
+    /只支持云效/,
+  )
+})
+
+it('cicd_run 云效运行参数：形状不合法时给出可照做的错误', async () => {
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', envs: ['x'] }, execFor()),
+    /envs 必须是对象/,
+  )
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', envs: { A: { nested: 1 } } }, execFor()),
+    /envs\.A 必须是/,
+  )
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', artifacts: { unknown: { a: 'b' } } }, execFor()),
+    /只支持 pipeline \/ acr \/ packages/,
+  )
+})

@@ -19,6 +19,7 @@ process.env.YUNXIAO_TOKEN = 'pt-test'
 let server: Server
 let baseUrl: string
 let postBodies: Array<{ params: string }> = []
+let lastRunPayload: Record<string, unknown> | null = null
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -39,6 +40,10 @@ beforeAll(async () => {
         assert.deepEqual(JSON.parse(payload.params), { envs: { A: '1' } })
         // 真实接口返回裸整数
         return send(200, '42', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P5/runs') {
+        lastRunPayload = JSON.parse(JSON.parse(body || '{}').params)
+        return send(200, '44', { 'content-type': 'text/plain' })
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42') {
         return send(200, JSON.stringify({
@@ -157,6 +162,33 @@ it('云效：触发响应是裸整数，解析成 runId', async () => {
   })
   const run = await provider.trigger({ params: { envs: { A: '1' } } })
   assert.equal(run.externalId, '42')
+})
+
+it('云效：运行参数原样透传，本次参数覆盖配置默认值', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P5',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    branchMode: 'off',
+    params: { comment: 'from-config', envs: { A: '1' } },
+  })
+  const run = await provider.trigger({
+    params: {
+      comment: 'from-tool',
+      envs: { B: '2' },
+      runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+      runningPipelineArtifacts: { 3184679: '12' },
+    },
+  })
+  assert.equal(run.externalId, '44')
+  assert.deepEqual(lastRunPayload, {
+    comment: 'from-tool',
+    envs: { B: '2' },
+    runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    runningPipelineArtifacts: { 3184679: '12' },
+  })
 })
 
 it('云效：FAIL → failed', async () => {

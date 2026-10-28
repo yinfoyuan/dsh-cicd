@@ -246,6 +246,25 @@
 - API（同一 webServer，`/dsh-cicd/config`）：`GET /` 快照、`GET /prefs`、
   `PUT|DELETE /pipeline`、`PUT|DELETE /organization`、`POST|DELETE /token`、`PUT /prefs`。
 
+### 5.18 云效运行参数（触发）
+
+- `cicd_run` 除 `params` 透传外，提供云效一等运行参数（对应 `CreatePipelineRun` 的
+  `params` JSON 字符串，形状以官方文档为准）：
+
+  | 工具参数 | 平台 key | 说明 |
+  |---|---|---|
+  | `comment` | `comment` | 运行备注 |
+  | `envs` | `envs` | 运行变量（对象，值统一转字符串） |
+  | `tags` | `runningTags` | 按仓库地址指定 tag |
+  | `repoBranches` | `runningBranchs` | 按仓库地址指定运行分支（多分支模式的 `branches` 不是它） |
+  | `artifacts.pipeline` / `.acr` / `.packages` | `runningPipelineArtifacts` / `runningAcrArtifacts` / `runningPackagesArtifacts` | 流水线 / ACR / 制品包版本 |
+
+- 合并顺序：`pipeline.params`（配置默认）→ `params` → 命名参数；命名参数**整体覆盖**同名 key，
+  不做深合并。
+- `branches` / `branchMode` 仍走 5.10 的多分支逻辑，与上述参数互不影响。
+- 只支持云效流水线；其他类型传这些参数时报错。值必须能转成字符串（数字/布尔自动转），
+  嵌套对象/数组报错。
+
 ## 6. 数据模型
 
 `RunRecord`（完整字段见 `src/types.ts`）：

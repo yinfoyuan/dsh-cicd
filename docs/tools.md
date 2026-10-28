@@ -52,6 +52,11 @@
 |---|---|---|---|
 | `pipeline` | string | ✅ | 流水线名称 |
 | `params` | json | | 传给平台的参数（分支、环境变量等） |
+| `comment` | string | | 云效运行备注（显示在运行记录里） |
+| `envs` | json | | 云效运行变量，如 `{ "APP_ENV": "test" }`；值支持字符串/数字/布尔 |
+| `tags` | json | | 云效按仓库地址指定的运行 tag，如 `{ "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }` |
+| `repoBranches` | json | | 云效按仓库地址指定的运行分支（`runningBranchs`）；多分支模式用 `branches`，不要用它 |
+| `artifacts` | json | | 云效制品版本：`{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }` |
 | `branches` | json | | 云效多分支模式：本次要新增/替换的运行分支列表 |
 | `branchMode` | string | | 多分支处理方式：`append`（默认）或 `replace` |
 | `reusePrevious` | boolean | | 当用户明确要复用上次运行的分支集合时传 `true`：跳过弹窗，直接用上次集合 |
@@ -204,6 +209,30 @@
 
 > 插件 client 没加载（老版本 DSH / 纯 CLI）时，会回退到通用 `ctx.userQuestions` 提问
 > （那个 UI 不支持默认全选，语义反过来：勾选 = 取消）。不是多分支流水线、或没有上次运行记录时也会明确报错。
+
+### 云效运行参数
+
+`comment` / `envs` / `tags` / `repoBranches` / `artifacts` 会映射成云效 `CreatePipelineRun`
+的 `params` key，与 `params` 合并、命名参数优先（整体覆盖，不做深合并）：
+
+```json
+{
+  "pipeline": "deploy-test",
+  "comment": "发版 1.2.3",
+  "envs": { "APP_ENV": "test", "RETRIES": 2 },
+  "tags": { "https://codeup.aliyun.com/<org>/<repo>.git": "1.2.3" },
+  "repoBranches": { "https://codeup.aliyun.com/<org>/<repo>.git": "release" },
+  "artifacts": {
+    "pipeline": { "<pipelineId>": "12" },
+    "acr": { "<registry>/<image>": "<tag>" },
+    "packages": { "<package>": "<version>" }
+  }
+}
+```
+
+- `tags` / `repoBranches` 的 key 是仓库地址；`branches` 仍然是多分支模式的运行分支集合；
+- 值支持字符串/数字/布尔（统一转字符串），嵌套对象/数组会报错；
+- 只支持云效流水线，其他类型传这些参数会直接报错。
 
 ## 进度提示（可选：客户端 toast / dsh-pet）
 

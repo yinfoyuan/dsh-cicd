@@ -332,6 +332,8 @@ export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvM
 /**
  * 云效 OpenAPI（新版 /oapi/v1/flow）：
  * - 触发 POST .../runs，body 里的 params 是「JSON 字符串」；响应是**裸整数** runId
+ *   params 支持 branchModeBranchs / envs / runningBranchs / runningTags /
+ *   running*Artifacts / comment（见 CreatePipelineRun 文档）
  * - 状态 GET .../runs/{runId}，status ∈ RUNNING / SUCCESS / FAIL
  * - 日志 GET .../runs/{runId}/job/{jobId}/log，jobId 从 stages[].stageInfo.jobs[].id 取
  * - 取消 PUT .../runs/{runId}（注意是 PUT），返回裸布尔

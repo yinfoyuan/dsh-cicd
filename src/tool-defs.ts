@@ -79,6 +79,63 @@ function missingConfigText(projectRoot: string): string {
   ].join('\n')
 }
 
+/**
+ * 云效运行参数：把工具入参映射成 `CreatePipelineRun` 的 `params` key。
+ * 形状见官方文档：`params` 是 JSON 字符串，支持
+ * `branchModeBranchs / envs / runningBranchs / runningTags / running*Artifacts / comment`。
+ *
+ * 只做「整体覆盖」：`envs`、`tags`、`artifacts` 都是整对象替换，不做深合并。
+ */
+const ARTIFACT_KEYS = {
+  pipeline: 'runningPipelineArtifacts',
+  acr: 'runningAcrArtifacts',
+  packages: 'runningPackagesArtifacts',
+} as const
+
+/** 平台要的是 `{ key: "value" }`：值统一转字符串，嵌套对象直接报错。 */
+function stringMap(value: unknown, field: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`${field} 必须是对象，例如 { "key": "value" }`)
+  const out: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null || typeof item === 'object')
+      throw new Error(`${field}.${key} 必须是字符串、数字或布尔值`)
+    out[key] = String(item)
+  }
+  return out
+}
+
+function artifactsParams(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('artifacts 必须是对象，例如 { "pipeline": { "<pipelineId>": "12" } }')
+  const out: Record<string, unknown> = {}
+  for (const [kind, item] of Object.entries(value)) {
+    if (!(kind in ARTIFACT_KEYS))
+      throw new Error(`artifacts 只支持 pipeline / acr / packages，收到了「${kind}」`)
+    if (item !== undefined)
+      out[ARTIFACT_KEYS[kind as keyof typeof ARTIFACT_KEYS]] = stringMap(item, `artifacts.${kind}`)
+  }
+  return out
+}
+
+function yunxiaoRunParams(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (args.comment !== undefined) {
+    if (typeof args.comment !== 'string')
+      throw new Error('comment 必须是字符串（运行备注）')
+    out.comment = args.comment
+  }
+  if (args.envs !== undefined)
+    out.envs = stringMap(args.envs, 'envs')
+  if (args.tags !== undefined)
+    out.runningTags = stringMap(args.tags, 'tags')
+  if (args.repoBranches !== undefined)
+    out.runningBranchs = stringMap(args.repoBranches, 'repoBranches')
+  if (args.artifacts !== undefined)
+    Object.assign(out, artifactsParams(args.artifacts))
+  return out
+}
+
 export interface BuildToolDeps {
   defineTool: DefineTool
   runner: Runner
@@ -135,10 +192,15 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
+      comment: { type: 'string', description: '云效运行备注（显示在运行记录里）' },
+      envs: { type: 'json', description: '云效运行变量，如 { "APP_ENV": "test" }；值支持字符串/数字/布尔' },
+      tags: { type: 'json', description: '云效按仓库地址指定的运行 tag，如 { "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }' },
+      repoBranches: { type: 'json', description: '云效按仓库地址指定的运行分支（runningBranchs）；多分支模式的集合用 branches，不要用它' },
+      artifacts: { type: 'json', description: '云效制品版本：{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }' },
       branches: { type: 'json', description: '云效多分支模式：本次要新增/替换的运行分支列表，如 ["feature/login"]；显式传了才会跳过弹窗' },
       branchMode: { type: 'string', description: '多分支模式处理方式：append（默认，上次 + 本次）或 replace（只用本次）' },
       reusePrevious: { type: 'boolean', description: '当用户明确要求复用上次运行的分支集合（不是本次重新挑选）时传 true：跳过弹窗，直接用上次确认的集合（replace）' },
@@ -171,6 +233,14 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           && params.branch === undefined
           && pipeline?.type === 'yunxiao'
           && pipeline?.branchMode !== 'off'
+
+        // 云效一等运行参数：与 params 合并，命名参数优先（整体覆盖，不做深合并）。
+        const yunxiaoParams = yunxiaoRunParams(args)
+        if (Object.keys(yunxiaoParams).length > 0) {
+          if (!pipeline || pipeline.type !== 'yunxiao')
+            throw new Error('comment / envs / tags / repoBranches / artifacts 只支持云效（yunxiao）流水线')
+          Object.assign(params, yunxiaoParams)
+        }
 
         if (reuse) {
           if (!pipeline || pipeline.type !== 'yunxiao') {

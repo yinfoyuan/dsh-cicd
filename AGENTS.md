@@ -48,6 +48,7 @@ docs/
   spec/spec.md 需求/数据模型/验收标准 —— 当前行为的唯一事实来源
   adr/         架构决策记录（为什么这么做）
   tools.md     工具参考（模型直接读）
+  roadmap.md   云效迭代排期（P0/P1/P2 与状态）
   landscape.md 竞品与生态调研
   environments.md 测试/正式环境建模调研
 scripts/check-docs.mjs  文档一致性检查（pnpm check 会跑）
@@ -111,6 +112,7 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 | 内部等待预算、退避、错误策略（不暴露给模型） | `src/runner.ts`（`suggestWaitSec` / `nextPollInterval` / `waitAbortReason`） |
 | 新平台适配器 | `src/providers.ts` + `src/config.ts` 的 `TYPE_ALIASES` + `types.ts` |
 | 云效多分支模式 | `src/providers.ts`（`isBranchMode` 检测、`CI_SOURCE_BRANCHES` 合并）+ `src/config.ts`（`branchMode`） |
+| 云效运行参数（comment / envs / tags / 制品） | `src/tool-defs.ts`（命名参数 → `params` 平台 key）+ `src/providers.ts`（触发 payload） |
 | 多分支交互选择 | `src/client/index.tsx`（`shell.overlay` 弹窗，默认全选）+ `src/branch-broker.ts`（HTTP 通道）+ `src/tool-defs.ts`（`interactive` / `preview`） |
 | 配置字段/校验 | `src/config.ts` |
 | 环境元数据（environment / tier，只做展示） | `src/config.ts` + `src/format.ts` + `src/client/index.tsx`（弹窗徽章） |
