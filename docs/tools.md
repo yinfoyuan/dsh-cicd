@@ -53,7 +53,7 @@
 | `pipeline` | string | ✅ | 流水线名称 |
 | `params` | json | | 传给平台的参数（分支、环境变量等） |
 | `comment` | string | | 云效运行备注（显示在运行记录里） |
-| `envs` | json | | 云效运行变量，如 `{ "APP_ENV": "test" }`；值支持字符串/数字/布尔 |
+| `envs` | json | | 云效运行变量，如 `{ "APP_ENV": "test" }`；值支持字符串/数字/布尔。不确定有哪些变量时先用 `cicd_vars` 查 |
 | `tags` | json | | 云效按仓库地址指定的运行 tag，如 `{ "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }` |
 | `repoBranches` | json | | 云效按仓库地址指定的运行分支（`runningBranchs`）；多分支模式用 `branches`，不要用它 |
 | `artifacts` | json | | 云效制品版本：`{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }` |
@@ -90,6 +90,30 @@
 ```
 
 失败时返回中文原因；`ConfirmRequired` 会提示先向用户确认。
+
+## cicd_vars
+
+只读：列出云效流水线的运行变量（名称/描述/是否加密），**不读取变量值**。
+触发前用它确认有哪些变量可覆盖；覆盖用 `cicd_run` 的 `envs`，没传的用平台默认值。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pipeline` | string | ✅ | 流水线名称（先用 `cicd_list` 查看） |
+
+示例输出：
+
+```
+流水线「deploy-test」的运行变量（只读，值不会读取）：2 个
+- VITE_BASE_URL：前端地址
+- NPM_TOKEN（已配置，值不可读）
+
+覆盖某个变量：cicd_run { "pipeline": "...", "envs": { "<key>": "<value>" } }；没传的用平台默认值。
+```
+
+- 变量来自云效流水线详情 `pipelineConfig.settings.globalParams[]`；
+- `value` 可能是明文密钥，插件**不读取、不回显、不落盘**；
+- 加密/掩码变量只显示「已配置，值不可读」；
+- shell 流水线没有运行变量，会直接报错。
 
 ## cicd_status
 
@@ -273,6 +297,7 @@
 
 ```
 cicd_list                        # 看有哪些
+  → cicd_vars { pipeline }       # 需要覆盖运行变量时，先看变量名（不读值）
   → cicd_run { pipeline }        # 触发，拿 runId；本轮到此结束
                                   # 有后续动作时加 followUp:true，终态自动唤醒
   → cicd_status { runId }        # 用户之后主动问进度时查一次

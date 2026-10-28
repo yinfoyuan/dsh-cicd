@@ -13,7 +13,7 @@ import type {
   WatchHooks,
 } from './types.js'
 /**
- * 六个模型工具的声明与执行体。
+ * 七个模型工具的声明与执行体。
  *
  * 单独放一个模块（而不是塞进 index.ts）的原因：这里不 import
  * `@deepseek-ai/dsh-tools`，测试可以传一个假的 defineTool 进来，
@@ -191,8 +191,45 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
   }))
 
   tools.push(defineTool({
+    name: 'cicd_vars',
+    description: '只读：列出云效流水线的运行变量（名称/描述/是否加密），**不读取变量值**。触发前用它确认有哪些变量可以覆盖；覆盖值用 cicd_run 的 envs 传，没传的用平台默认值。shell 流水线没有运行变量。',
+    parameters: {
+      pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => true,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        const name = String(args.pipeline ?? '')
+        const variables = await runner.variables(project, { pipeline: name })
+        if (variables.length === 0)
+          return { text: `流水线「${name}」没有运行变量（平台未返回变量定义，或这不是云效流水线）。` }
+
+        const lines = variables.map((item) => {
+          const secret = item.encrypted || item.masked ? '（已配置，值不可读）' : ''
+          const desc = item.description ? `：${item.description}` : ''
+          return `- ${item.key}${secret}${desc}`
+        })
+        return {
+          text: [
+            `流水线「${name}」的运行变量（只读，值不会读取）：${variables.length} 个`,
+            ...lines,
+            '',
+            '覆盖某个变量：cicd_run { "pipeline": "...", "envs": { "<key>": "<value>" } }；没传的用平台默认值。',
+          ].join('\n'),
+        }
+      }
+      catch (error) {
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
@@ -360,6 +397,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           : undefined
         watch?.(project, record, hooks)
         const env = environmentLabel(record)
+        const hasEnvs = args.envs !== undefined || params.envs !== undefined
         return {
           text: [
             `${ICON[record.status] ?? '•'} 已触发 ${record.pipeline}（${record.type}）`,
@@ -369,6 +407,9 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             record.branches?.length ? `branches: ${record.branches.join('、')}` : '',
             record.url ? `url:    ${record.url}` : '',
             record.note ? `note:   ${record.note}` : '',
+            record.variables?.length
+              ? `运行变量：${record.variables.length} 个${hasEnvs ? '（本次已覆盖，未覆盖的用平台默认值）' : '（未覆盖，使用平台默认值；查看用 cicd_vars）'}`
+              : '',
             '',
             `✅ 触发完成，本轮到此结束。`,
             canFollowUp

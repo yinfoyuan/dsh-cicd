@@ -1,6 +1,6 @@
 # 云效迭代排期
 
-- 状态：执行中（P0-1 已完成，下一步 P0-2 运行历史）
+- 状态：执行中（P0-1 / Y19 已完成，下一步 P0-2 运行历史）
 - 更新：2026-10-28
 - 关联：[spec](./spec/spec.md)、[tools](./tools.md)、[landscape](./landscape.md)
 
@@ -27,6 +27,7 @@
 | Y3 | 运行信息补全：触发方式/触发人/commit/运行页链接/取消文案 | `GetPipelineRun` 响应字段 | ⬜ |
 | Y4 | 错误码翻译 + 设置页「测试连接」 | `GET .../pipelines/{id}` | ⬜ |
 | Y5 | 同流水线并发保护（已有 running 时提示/需 force） | `latestPipelineRun` / `ListPipelineRuns` | ⬜ |
+| Y19 | 运行变量发现与提示：读流水线变量定义，`cicd_vars` 展示、`cicd_run` 提示模型询问 | `pipelineConfig.settings.globalParams` | ✅（只读副本；表单未做） |
 
 **Y1 细节**（已按官方文档确认形状，`params` 是 JSON 字符串；工具面已实现
 `cicd_run` 的 `comment` / `envs` / `tags` / `repoBranches` / `artifacts`，命名参数优先）：
@@ -46,6 +47,21 @@
 
 工具面：`cicd_run` 增加 `comment` / `envs` / `tags` / `repoBranches` / `artifacts`，
 与 `params` 合并（显式命名参数优先），仍保留 `params` 兜底。
+
+**Y19 细节**（新，2026-10-28 来自真实使用的反馈）：用户在会话里触发流水线时，看不到
+云效运行弹窗里的「运行变量」/「运行参数」，也不知道有哪些变量可以填。
+
+- **字段已确认**（2026-10-28 只读探测真实流水线）：`GET .../pipelines/{pipelineId}` 的
+  `pipelineConfig.settings.globalParams[]`，每项含 `key` / `description` / `runningConfig` /
+  `encrypted` / `masked` / `value`；`runningConfig=true` 即云效运行弹窗里的可配置变量。
+- **安全约束**：`value` 是**明文**（含 `NPM_TOKEN`、七牛 AK/SK 这类），实现时只读
+  `key/description/runningConfig/encrypted/masked`，**任何工具输出、日志、toast、运行记录都不得带值**；
+  `encrypted/masked` 只显示「已配置」。
+- 只读提示（先做）：读变量定义后在模型可读处展示变量名，`cicd_run` 触发时提示
+  「有 N 个运行变量，没传 `envs` 就用平台默认值」；具体形态待定（新只读工具 `cicd_vars` 或
+  `cicd_run` 输出提示）。
+- 交互表单（后做，可选）：把多分支弹窗扩展成「运行配置」表单（分支 + 变量 + 备注），
+  默认值预填，必填为空时不允许提交；注意变量值不落盘、不回显。
 
 ## P1：v0.4（写操作与接入体验，先补 ADR）
 
@@ -91,6 +107,9 @@
    决定 `normalizeStatus` 是否需要新增「等待审批」展示态。
 3. 运行页面 URL 规则（触发输出里的控制台链接目前硬编码中心版域名）。
 4. `CreatePipelineRun` 各参数在真实流水线上的接受情况（文档形状已确认，仍建议一条真实 run 验证）。
+5. ~~流水线详情里的运行变量字段~~ **已确认（2026-10-28 只读探测）**：
+   `pipelineConfig.settings.globalParams[]`（`key` / `description` / `runningConfig` /
+   `encrypted` / `masked` / `value`），`value` 为明文，禁止输出。
 
 ## 验收与节奏
 

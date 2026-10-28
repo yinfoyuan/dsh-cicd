@@ -23,7 +23,7 @@
 ```
 src/
   index.ts     插件入口：name / inject / apply（注册工具）
-  tool-defs.ts 六个工具的声明与执行体（不 import dsh-tools，方便测试）
+  tool-defs.ts 七个工具的声明与执行体（不 import dsh-tools，方便测试）
   project.ts   从 exec.agent.session.header.cwd 解析项目根
   config.ts    cicd.json 读取 / 校验 / ${ENV} 展开
   secrets.ts   token 解析（DSH credential-ref 优先，本地 env 回退）
@@ -113,6 +113,7 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 | 新平台适配器 | `src/providers.ts` + `src/config.ts` 的 `TYPE_ALIASES` + `types.ts` |
 | 云效多分支模式 | `src/providers.ts`（`isBranchMode` 检测、`CI_SOURCE_BRANCHES` 合并）+ `src/config.ts`（`branchMode`） |
 | 云效运行参数（comment / envs / tags / 制品） | `src/tool-defs.ts`（命名参数 → `params` 平台 key）+ `src/providers.ts`（触发 payload） |
+| 云效运行变量（只读副本） | `src/providers.ts`（`parsePipelineVariables` / `readPipelineVariables`）+ `src/runner.ts`（`Runner.variables`）+ `src/tool-defs.ts`（`cicd_vars`） |
 | 多分支交互选择 | `src/client/index.tsx`（`shell.overlay` 弹窗，默认全选）+ `src/branch-broker.ts`（HTTP 通道）+ `src/tool-defs.ts`（`interactive` / `preview`） |
 | 配置字段/校验 | `src/config.ts` |
 | 环境元数据（environment / tier，只做展示） | `src/config.ts` + `src/format.ts` + `src/client/index.tsx`（弹窗徽章） |

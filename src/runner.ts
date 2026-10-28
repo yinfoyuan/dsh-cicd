@@ -4,6 +4,7 @@ import type { ConflictInfo } from './conflict.js'
 import type {
   LogOptions,
   Pipeline,
+  PipelineVariable,
   PluginContext,
   PollResult,
   Project,
@@ -274,10 +275,25 @@ export class Runner {
       url: out.url ?? '',
       note: out.note ?? '',
       branches: out.branches && out.branches.length > 0 ? out.branches : undefined,
+      variables: out.variables && out.variables.length > 0 ? out.variables : undefined,
       checkedAt: new Date().toISOString(),
     })
     saveRecord(project.runsDir, record)
     return record
+  }
+
+  /** 只读：运行变量定义（只有 key/描述/标记，值不读取）。 */
+  async variables(project: Project, { pipeline }: { pipeline?: string } = {}): Promise<PipelineVariable[]> {
+    const name = String(pipeline ?? '').trim()
+    if (!name)
+      throw new PipelineError('缺少流水线名称。', '先用 cicd_list 查看可用的流水线。')
+    const target = project.config.pipelines[name]
+    if (!target)
+      throw new PipelineError(`没有名为「${name}」的流水线。已配置：${Object.keys(project.config.pipelines).join('、')}`)
+    if (target.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有运行变量。', 'shell 流水线没有平台运行变量。')
+    const provider = createProvider(target, await this.#envFor(project, target))
+    return provider.variables ? provider.variables() : []
   }
 
   #runShell(project: Project, pipeline: ShellPipeline, record: RunRecord): RunRecord {

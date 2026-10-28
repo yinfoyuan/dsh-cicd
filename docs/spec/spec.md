@@ -265,6 +265,17 @@
 - 只支持云效流水线；其他类型传这些参数时报错。值必须能转成字符串（数字/布尔自动转），
   嵌套对象/数组报错。
 
+### 5.19 云效运行变量（只读副本 + 覆盖写入）
+
+- `cicd_vars { pipeline }` 只读：从云效流水线详情 `pipelineConfig.settings.globalParams[]`
+  取变量定义，输出 `key` / `description` / `runningConfig` / `encrypted` / `masked`。
+- **变量值永不读取**：平台返回的 `value` 可能是明文密钥，适配器不映射、不输出、不落盘；
+  工具输出、日志、toast、运行记录里都不能出现值。加密/掩码变量只显示「已配置」。
+- 触发时把变量定义的副本写入 `RunRecord.variables`（仅元数据），`cicd_run` 输出
+  `运行变量：N 个（未覆盖，使用平台默认值）`；显式传 `envs` 的 key 覆盖，未传的用平台默认值。
+- `envs` 只做覆盖写入，不修改云效流水线定义；`cicd.json` 的 `params.envs` 可作固定默认覆盖。
+- shell 流水线没有运行变量；`cicd_vars` 报错并提示只有云效有。
+
 ## 6. 数据模型
 
 `RunRecord`（完整字段见 `src/types.ts`）：
@@ -281,6 +292,7 @@
 | `rawStatus` | 平台原始状态 |
 | `progress` | 云效阶段进度 |
 | `branches` | 云效多分支模式：本次集成的分支列表 |
+| `variables` | 云效运行变量副本（仅 key/描述/标记，不含值） |
 | `canceledByUser` | 通过 `cicd_cancel` 取消：仍推终态 toast，但不再唤醒模型 |
 | `checkError` / `checkErrorRetryable` | 最近一次查询错误及是否可重试 |
 | `exitCode` | shell 退出码 |

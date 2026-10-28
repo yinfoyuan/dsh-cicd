@@ -16,6 +16,23 @@ export type EnvironmentTier = 'development' | 'testing' | 'staging' | 'productio
 
 export type EnvMap = Record<string, string | undefined>
 
+/**
+ * 云效流水线的运行变量定义（只有元数据）。
+ *
+ * 平台详情接口会返回 `value`（可能是明文密钥），这里**故意不映射 value**：
+ * 变量值永远不进工具输出、日志、通知或运行记录，只做触发时的显式覆盖。
+ */
+export interface PipelineVariable {
+  key: string
+  description?: string
+  /** 运行时可配置（云效运行弹窗里会显示）。 */
+  runningConfig?: boolean
+  /** 加密变量：只展示「已配置」，值不可读。 */
+  encrypted?: boolean
+  /** 掩码变量：只展示「已配置」，值不可读。 */
+  masked?: boolean
+}
+
 export interface PipelineBase {
   name: string
   type: PipelineType
@@ -106,6 +123,8 @@ export interface RunRecord {
   buildUrl?: string
   /** 云效多分支模式：本次集成/运行的分支列表。 */
   branches?: string[]
+  /** 云效运行变量副本（只有 key/描述/标记，不含值）；触发时写入，供后续展示。 */
+  variables?: PipelineVariable[]
   /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
   canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */
@@ -123,6 +142,8 @@ export interface TriggerResult {
   note?: string
   /** 云效多分支模式：本次实际提交的分支列表。 */
   branches?: string[]
+  /** 云效运行变量副本（只有元数据，不含值）。 */
+  variables?: PipelineVariable[]
 }
 
 export interface PollResult {
@@ -149,6 +170,8 @@ export interface Provider {
   logs: (record: RunRecord, options?: LogOptions) => Promise<string>
   /** 只读：抓取分支管理器相关 job 的日志（用于冲突解析）；没有实现时回退 logs。 */
   conflictLogs?: (record: RunRecord) => Promise<string>
+  /** 只读：流水线运行变量定义（只有元数据，不含值）；没有实现时返回空。 */
+  variables?: () => Promise<PipelineVariable[]>
   cancel: (record: RunRecord) => Promise<{ note?: string }>
 }
 

@@ -4,7 +4,7 @@ import type { Pipeline, RunRecord, YunxiaoPipeline } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { afterAll, beforeAll, it } from 'vitest'
-import { createProvider as createProviderTyped, getYunxiaoBranchState, isRetryable, mergeBranches, parseSourceBranches, pendingConflict, summarizeStages } from '../src/providers.js'
+import { createProvider as createProviderTyped, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, summarizeStages } from '../src/providers.js'
 
 /** 测试里的流水线只写用到的字段，这里按 Pipeline 收窄。 */
 function createProvider(pipeline: Partial<Pipeline>): ReturnType<typeof createProviderTyped> {
@@ -41,6 +41,9 @@ beforeAll(async () => {
         // 真实接口返回裸整数
         return send(200, '42', { 'content-type': 'text/plain' })
       }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P8/runs') {
+        return send(200, '45', { 'content-type': 'text/plain' })
+      }
       if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P5/runs') {
         lastRunPayload = JSON.parse(JSON.parse(body || '{}').params)
         return send(200, '44', { 'content-type': 'text/plain' })
@@ -53,6 +56,21 @@ beforeAll(async () => {
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42/job/7/log') {
         return send(200, JSON.stringify({ content: 'boom log', last: 1, more: false }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P8') {
+        return send(200, JSON.stringify({
+          name: 'P8',
+          pipelineConfig: {
+            sources: [{ data: { isBranchMode: false } }],
+            settings: JSON.stringify({
+              globalParams: [
+                { key: 'VITE_BASE_URL', value: 'https://secret.example.com', description: '前端地址', runningConfig: true, encrypted: false, masked: false },
+                { key: 'NPM_TOKEN', value: 'pt-super-secret', runningConfig: true, encrypted: true, masked: true },
+                { created: true },
+              ],
+            }),
+          },
+        }))
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1') {
         return send(200, JSON.stringify({
@@ -189,6 +207,56 @@ it('云效：运行参数原样透传，本次参数覆盖配置默认值', asyn
     runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
     runningPipelineArtifacts: { 3184679: '12' },
   })
+})
+
+it('云效：运行变量只读副本，不包含值', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P8',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const variables = await provider.variables?.()
+  assert.deepEqual(variables, [
+    { key: 'VITE_BASE_URL', description: '前端地址', runningConfig: true },
+    { key: 'NPM_TOKEN', runningConfig: true, encrypted: true, masked: true },
+  ])
+  assert.doesNotMatch(JSON.stringify(variables), /secret|pt-/)
+})
+
+it('云效：触发时带回变量副本（不含值）', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P8',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    branchMode: 'off',
+    params: {},
+  })
+  const run = await provider.trigger({ params: {} })
+  assert.equal(run.externalId, '45')
+  assert.equal(run.variables?.length, 2)
+  assert.doesNotMatch(JSON.stringify(run), /secret|pt-/)
+})
+
+it('parsePipelineVariables：只取元数据，value 与无 key 项被忽略', () => {
+  const settings = JSON.stringify({
+    globalParams: [
+      { key: 'A', value: 'secret-a', encrypted: true, runningConfig: true },
+      { key: 'B', value: 123, description: '说明' },
+      { noKey: true },
+      null,
+    ],
+  })
+  assert.deepEqual(parsePipelineVariables(settings), [
+    { key: 'A', runningConfig: true, encrypted: true },
+    { key: 'B', description: '说明' },
+  ])
+  assert.deepEqual(parsePipelineVariables('not-json'), [])
+  assert.deepEqual(parsePipelineVariables({ globalParams: null }), [])
 })
 
 it('云效：FAIL → failed', async () => {

@@ -67,7 +67,7 @@ function runIdOf(text: string) {
   return text.match(/runId:\s+([\w.-]+)/)?.[1] ?? ''
 }
 
-it('注册了六个工具', () => {
+it('注册了七个工具', () => {
   assert.deepEqual(tools.map((t: ToolSpec) => t.name).sort(), [
     'cicd_cancel',
     'cicd_conflict',
@@ -75,6 +75,7 @@ it('注册了六个工具', () => {
     'cicd_logs',
     'cicd_run',
     'cicd_status',
+    'cicd_vars',
   ])
 })
 
@@ -782,4 +783,59 @@ it('cicd_run 云效运行参数：形状不合法时给出可照做的错误', a
     () => tool('cicd_run').execute({ pipeline: 'multibranch', artifacts: { unknown: { a: 'b' } } }, execFor()),
     /只支持 pipeline \/ acr \/ packages/,
   )
+})
+
+it('cicd_vars 只列变量名，不输出值', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([
+        { key: 'NPM_TOKEN', encrypted: true, masked: true },
+        { key: 'VITE_BASE_URL', description: '前端地址', runningConfig: true },
+      ]),
+    },
+    options: {},
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_vars')
+    .execute({ pipeline: 'multibranch' }, execFor())
+  assert.match(result.text, /NPM_TOKEN/)
+  assert.match(result.text, /值不可读/)
+  assert.match(result.text, /VITE_BASE_URL/)
+  assert.match(result.text, /前端地址/)
+  assert.doesNotMatch(result.text, /secret|pt-/)
+})
+
+it('cicd_vars：shell 流水线明确报错', async () => {
+  await assert.rejects(
+    () => tool('cicd_vars').execute({ pipeline: 'ping' }, execFor()),
+    /只有云效/,
+  )
+})
+
+it('cicd_run 触发后提示运行变量（未覆盖用默认值）', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        variables: [
+          { key: 'VITE_BASE_URL' },
+          { key: 'NPM_TOKEN', encrypted: true },
+        ],
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'multibranch' }, execFor())
+  assert.match(result.text, /运行变量：2 个/)
+  assert.match(result.text, /使用平台默认值/)
+  assert.match(result.text, /cicd_vars/)
+  assert.doesNotMatch(result.text, /secret|pt-/)
 })

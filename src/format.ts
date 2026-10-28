@@ -109,6 +109,8 @@ export function recordText(record: RunRecord): string {
     lines.push(`rawStatus: ${record.rawStatus}`)
   if (record.branches?.length)
     lines.push(`branches: ${record.branches.join('、')}`)
+  if (record.variables?.length)
+    lines.push(`运行变量: ${record.variables.length} 个（只有名称，值不读取）`)
   if (record.progress)
     lines.push(`progress:  ${record.progress}`)
   if (record.url)

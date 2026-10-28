@@ -2,6 +2,7 @@ import type {
   EnvMap,
   LogOptions,
   Pipeline,
+  PipelineVariable,
   PollResult,
   Provider,
   RunRecord,
@@ -50,7 +51,10 @@ interface YunxiaoRun {
 }
 
 interface YunxiaoPipelineDetail {
-  pipelineConfig?: { sources?: Array<{ data?: { isBranchMode?: boolean } }> }
+  pipelineConfig?: {
+    sources?: Array<{ data?: { isBranchMode?: boolean } }>
+    settings?: unknown
+  }
   object?: YunxiaoRun
 }
 
@@ -274,21 +278,77 @@ export interface YunxiaoBranchState {
   previous: string[]
 }
 
+export interface YunxiaoPipelineState extends YunxiaoBranchState {
+  /** 运行变量副本（只有 key/描述/标记，值不读取）。 */
+  variables: PipelineVariable[]
+}
+
+function toPipelineVariable(item: unknown): PipelineVariable | null {
+  const entry = item as Record<string, unknown> | null
+  const key = typeof entry?.key === 'string' ? entry.key.trim() : ''
+  if (!key)
+    return null
+  const variable: PipelineVariable = { key }
+  if (typeof entry?.description === 'string' && entry.description)
+    variable.description = entry.description
+  if (entry?.runningConfig === true)
+    variable.runningConfig = true
+  if (entry?.encrypted === true)
+    variable.encrypted = true
+  if (entry?.masked === true)
+    variable.masked = true
+  return variable
+}
+
 /**
- * 读取云效流水线的分支模式状态：是否多分支 + 上次集成的分支。
- * 交互式选择分支（`cicd_run interactive`）和触发时的 merge 都用它。
+ * 只要运行变量定义：不读 `value`（可能是明文密钥），只保留 key/描述/加密标记。
+ * 字段来自流水线详情 `pipelineConfig.settings.globalParams[]`。
+ */
+export function parsePipelineVariables(settings: unknown): PipelineVariable[] {
+  let value: unknown = settings
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    }
+    catch {
+      return []
+    }
+  }
+  const list = (value as { globalParams?: unknown } | undefined)?.globalParams
+  if (!Array.isArray(list))
+    return []
+  return list
+    .map(toPipelineVariable)
+    .filter((item): item is PipelineVariable => item !== null)
+}
+
+function detailPath(pipeline: YunxiaoPipeline): string {
+  const orgPath = pipeline.organizationId ? `/organizations/${pipeline.organizationId}` : ''
+  return `/oapi/v1/flow${orgPath}/pipelines/${pipeline.pipelineId}`
+}
+
+/** 只读流水线详情里的运行变量；失败抛错，由调用方决定是否 best-effort。 */
+async function readPipelineVariables(pipeline: YunxiaoPipeline, env: EnvMap): Promise<PipelineVariable[]> {
+  const headers = { 'x-yunxiao-token': tokenOf(pipeline, env), 'content-type': 'application/json' }
+  const { data } = await fetchJson(`${pipeline.baseUrl}${detailPath(pipeline)}`, { headers })
+  return parsePipelineVariables((data as YunxiaoPipelineDetail)?.pipelineConfig?.settings)
+}
+
+/**
+ * 读取云效流水线的分支模式 + 运行变量定义。
+ * 交互式选择分支（`cicd_run interactive`）、触发时的 merge 和变量副本都用它。
  */
 // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
-export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoBranchState> {
+export async function getYunxiaoPipelineState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoPipelineState> {
   const base = pipeline.baseUrl
-  const orgPath = pipeline.organizationId ? `/organizations/${pipeline.organizationId}` : ''
-  const basePath = `/oapi/v1/flow${orgPath}/pipelines/${pipeline.pipelineId}`
+  const basePath = detailPath(pipeline)
   const headers = { 'x-yunxiao-token': tokenOf(pipeline, env), 'content-type': 'application/json' }
 
   const { data } = await fetchJson(`${base}${basePath}`, { headers })
   const detail = data as YunxiaoPipelineDetail
   const sources = Array.isArray(detail?.pipelineConfig?.sources) ? detail.pipelineConfig.sources : []
   const isBranchMode = sources.some(source => source?.data?.isBranchMode === true)
+  const variables = parsePipelineVariables(detail?.pipelineConfig?.settings)
 
   let previous: string[] = []
   if (isBranchMode) {
@@ -313,8 +373,8 @@ export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvM
           if (!id)
             continue
           try {
-            const detail = await fetchJson(`${base}${basePath}/runs/${id}`, { headers })
-            const branches = readPrevious(runOf(detail.data))
+            const detail2 = await fetchJson(`${base}${basePath}/runs/${id}`, { headers })
+            const branches = readPrevious(runOf(detail2.data))
             if (branches.length > 0) {
               previous = branches
               break
@@ -326,6 +386,12 @@ export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvM
       catch {}
     }
   }
+  return { isBranchMode, previous, variables }
+}
+
+/** 兼容旧调用点：只要分支状态（不含变量）。 */
+export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoBranchState> {
+  const { isBranchMode, previous } = await getYunxiaoPipelineState(pipeline, env)
   return { isBranchMode, previous }
 }
 
@@ -362,6 +428,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
       const { branches: branchesRaw, branch: branchRaw, branchMode: branchModeRaw, ...rest } = merged
       let payload: Record<string, unknown> = merged
       let branches: string[] = []
+      let variables: PipelineVariable[] = []
       let modeNote = ''
 
       if (pipeline.branchMode !== 'off') {
@@ -369,10 +436,11 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         const mode: 'append' | 'replace'
           = String(branchModeRaw ?? pipeline.branchMode ?? 'append').toLowerCase() === 'replace' ? 'replace' : 'append'
 
-        let state: YunxiaoBranchState | null = null
+        let state: YunxiaoPipelineState | null = null
         let detectError = ''
         try {
-          state = await getYunxiaoBranchState(pipeline, env)
+          state = await getYunxiaoPipelineState(pipeline, env)
+          variables = state.variables
         }
         catch (error) {
           detectError = (error as Error).message
@@ -396,6 +464,14 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         else if (requested.length > 0) {
           throw new Error('这条云效流水线不是多分支模式，branches / branch 参数不适用')
         }
+      }
+
+      // branchMode: off 时不会走上面的详情请求；单独读一次变量定义，失败就忽略。
+      if (pipeline.branchMode === 'off') {
+        try {
+          variables = await readPipelineVariables(pipeline, env)
+        }
+        catch {}
       }
 
       // 官方要求：唯一顶层字段 params，且值是 JSON 字符串（不是对象）。
@@ -426,6 +502,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
           `云效 Flow run ${runId}（页面：https://devops.aliyun.com/flow/pipeline/${pipeline.pipelineId}）`,
         ].filter(Boolean).join('；'),
         branches: branches.length > 0 ? branches : undefined,
+        variables: variables.length > 0 ? variables : undefined,
       }
     },
     async poll(record: RunRecord): Promise<PollResult> {
@@ -497,6 +574,10 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         }
       }
       return chunks.join('\n\n')
+    },
+    /** 只读：运行变量定义（不含值）。 */
+    async variables(): Promise<PipelineVariable[]> {
+      return readPipelineVariables(pipeline, env)
     },
     async cancel(record: RunRecord): Promise<{ note?: string }> {
       const { text } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {
