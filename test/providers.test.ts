@@ -57,6 +57,9 @@ beforeAll(async () => {
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42/job/7/log') {
         return send(200, JSON.stringify({ content: 'boom log', last: 1, more: false }))
       }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P9') {
+        return send(200, 'secret-value-not-json')
+      }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P8') {
         return send(200, JSON.stringify({
           name: 'P8',
@@ -240,6 +243,25 @@ it('云效：触发时带回变量副本（不含值）', async () => {
   assert.equal(run.externalId, '45')
   assert.equal(run.variables?.length, 2)
   assert.doesNotMatch(JSON.stringify(run), /secret|pt-/)
+})
+
+it('云效：变量读取失败时不回显响应体', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P9',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  await assert.rejects(
+    () => provider.variables!(),
+    (error: Error) => {
+      assert.doesNotMatch(error.message, /secret-value/)
+      assert.match(error.message, /读取云效运行变量失败/)
+      return true
+    },
+  )
 })
 
 it('parsePipelineVariables：只取元数据，value 与无 key 项被忽略', () => {

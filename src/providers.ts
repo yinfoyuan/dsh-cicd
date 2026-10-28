@@ -577,7 +577,14 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
     },
     /** 只读：运行变量定义（不含值）。 */
     async variables(): Promise<PipelineVariable[]> {
-      return readPipelineVariables(pipeline, env)
+      try {
+        return await readPipelineVariables(pipeline, env)
+      }
+      catch (error) {
+        // 错误信息不带响应体：详情响应里可能有明文变量值，不能回显到工具输出。
+        const status = (error as { httpStatus?: number }).httpStatus
+        throw new Error(`读取云效运行变量失败${status ? `（HTTP ${status}）` : ''}：请检查 token / 权限 / 组织与流水线 ID`)
+      }
     },
     async cancel(record: RunRecord): Promise<{ note?: string }> {
       const { text } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {
