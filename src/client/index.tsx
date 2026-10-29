@@ -28,10 +28,11 @@ function readSeenSeq(): number {
 
 const CSS = `
 .dshp-backdrop{position:fixed;top:var(--dsh-frame-chrome-top,0px);right:0;bottom:0;left:0;z-index:10010;display:flex;align-items:center;justify-content:center;padding:var(--dsh-frame-overlay-top,24px) 24px 24px;background:var(--dsw-alias-bg-mask-1,rgba(15,17,21,.45));}
-.dshp-card{width:min(560px,100%);max-height:min(80vh,720px);display:flex;flex-direction:column;gap:12px;padding:20px;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#1a1a1a);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:var(--dsw-radius-lg,14px);box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:var(--dsw-font-family,system-ui,-apple-system,"Segoe UI",sans-serif);font-size:14px;line-height:1.5;}
+.dshp-card{width:min(560px,100%);max-height:min(80vh,720px);display:flex;flex-direction:column;gap:12px;padding:20px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#fff);color:var(--dsw-alias-label-primary,#1a1a1a);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.12));border-radius:var(--dsw-radius-lg,14px);box-shadow:0 20px 60px rgba(0,0,0,.28);font-family:var(--dsw-font-family,system-ui,-apple-system,"Segoe UI",sans-serif);font-size:14px;line-height:1.5;}
+.dshp-body{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding-right:4px;}
 .dshp-title{font-size:16px;font-weight:600;color:var(--dsw-alias-label-primary,#1a1a1a);}
 .dshp-subtitle{font-size:12px;color:var(--dsw-alias-label-secondary,#666);margin-top:3px;}
-.dshp-list{overflow:auto;max-height:38vh;display:flex;flex-direction:column;gap:2px;padding:4px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-1,#fafafa);}
+.dshp-list{overflow:visible;display:flex;flex-direction:column;gap:2px;padding:4px;border:1px solid var(--dsw-alias-border-l1,rgba(0,0,0,.08));border-radius:var(--dsw-radius-md,10px);background:var(--dsw-alias-bg-layer-1,#fafafa);}
 .dshp-option{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:var(--dsw-radius-sm,6px);cursor:pointer;color:var(--dsw-alias-label-primary,#1a1a1a);}
 .dshp-option:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.04));}
 .dshp-option input{width:16px;height:16px;margin:0;accent-color:var(--dsw-alias-brand-primary,#4d6bfe);cursor:pointer;}
@@ -314,77 +315,79 @@ function BranchDialog(): ReactElement | null {
             </div>
           </div>
 
-          {showBranches
-            ? (
-                <>
-                  <div className="dshp-list">
-                    {request.previous.length === 0
-                      ? <div className="dshp-empty">上次没有可继承的分支，请在下方输入新增分支</div>
-                      : request.previous.map(branch => (
-                          <label key={branch} className="dshp-option">
-                            <input type="checkbox" checked={keep.has(branch)} onChange={() => toggle(branch)} />
-                            <span className="dshp-branch">{branch}</span>
-                          </label>
-                        ))}
-                  </div>
+          <div className="dshp-body">
+            {showBranches
+              ? (
+                  <>
+                    <div className="dshp-list">
+                      {request.previous.length === 0
+                        ? <div className="dshp-empty">上次没有可继承的分支，请在下方输入新增分支</div>
+                        : request.previous.map(branch => (
+                            <label key={branch} className="dshp-option">
+                              <input type="checkbox" checked={keep.has(branch)} onChange={() => toggle(branch)} />
+                              <span className="dshp-branch">{branch}</span>
+                            </label>
+                          ))}
+                    </div>
 
-                  <div>
-                    <div className="dshp-label">新增分支（逗号分隔，可留空）</div>
-                    <input
-                      className="dshp-input"
-                      value={custom}
-                      placeholder="例如：feat/login, feat/pay"
-                      onChange={event => setCustom(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing)
-                          return
-                        event.preventDefault()
-                        void submit()
-                      }}
-                    />
-                  </div>
-                </>
-              )
-            : null}
-
-          {variables.length > 0
-            ? (
-                <div className="dshp-vars">
-                  <div className="dshp-label">运行变量（留空 = 不覆盖，用云效当前值）</div>
-                  {variables.map(variable => (
-                    <label key={variable.key} className="dshp-field">
-                      <span className="dshp-field-label">
-                        {variable.key}
-                        {variable.encrypted || variable.masked ? '（已配置，值不可读）' : ''}
-                      </span>
+                    <div>
+                      <div className="dshp-label">新增分支（逗号分隔，可留空）</div>
                       <input
                         className="dshp-input"
-                        type={variable.encrypted || variable.masked ? 'password' : 'text'}
-                        autoComplete="off"
-                        value={envs[variable.key] ?? ''}
-                        placeholder={variable.description || '留空 = 不覆盖'}
-                        onChange={event => setEnvs(previous => ({ ...previous, [variable.key]: event.target.value }))}
+                        value={custom}
+                        placeholder="例如：feat/login, feat/pay"
+                        onChange={event => setCustom(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing)
+                            return
+                          event.preventDefault()
+                          void submit()
+                        }}
                       />
-                    </label>
-                  ))}
-                  <div className="dshp-hint">值只用于本次触发：不会写入运行记录，也不经过模型。</div>
-                </div>
-              )
-            : null}
+                    </div>
+                  </>
+                )
+              : null}
 
-          {runConfigMode && request.showComment === true
-            ? (
-                <div>
-                  <div className="dshp-label">运行备注（可选）</div>
-                  <input
-                    className="dshp-input"
-                    value={comment}
-                    placeholder="例如：发版 1.2.3"
-                    onChange={event => setComment(event.target.value)}
-                  />
-                </div>
-              )
-            : null}
+            {variables.length > 0
+              ? (
+                  <div className="dshp-vars">
+                    <div className="dshp-label">运行变量（留空 = 不覆盖，用云效当前值）</div>
+                    {variables.map(variable => (
+                      <label key={variable.key} className="dshp-field">
+                        <span className="dshp-field-label">
+                          {variable.key}
+                          {variable.encrypted || variable.masked ? '（已配置，值不可读）' : ''}
+                        </span>
+                        <input
+                          className="dshp-input"
+                          type={variable.encrypted || variable.masked ? 'password' : 'text'}
+                          autoComplete="off"
+                          value={envs[variable.key] ?? ''}
+                          placeholder={variable.description || '留空 = 不覆盖'}
+                          onChange={event => setEnvs(previous => ({ ...previous, [variable.key]: event.target.value }))}
+                        />
+                      </label>
+                    ))}
+                    <div className="dshp-hint">值只用于本次触发：不会写入运行记录，也不经过模型。</div>
+                  </div>
+                )
+              : null}
+
+            {runConfigMode && request.showComment === true
+              ? (
+                  <div>
+                    <div className="dshp-label">运行备注（可选）</div>
+                    <input
+                      className="dshp-input"
+                      value={comment}
+                      placeholder="例如：发版 1.2.3"
+                      onChange={event => setComment(event.target.value)}
+                    />
+                  </div>
+                )
+              : null}
+          </div>
 
           <div className="dshp-summary">
             {[
