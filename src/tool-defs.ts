@@ -233,12 +233,12 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突、等待人工确认、异常，传 followUp:true，终态或检测到冲突/人工确认暂停时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。用户把某个运行变量指定为某值（例如「TEST_NAME 为 30」）时用 envs，不要写进 comment。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户话里如果有版本、环境、目的、变更说明、工单号这类上下文，主动提取成 comment 传进来（例如「预发布版本」），不要等用户专门提备注；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突、等待人工确认、异常，传 followUp:true，终态或检测到冲突/人工确认暂停时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。用户话里指定了某个运行变量的值时用 envs，不要写进 comment。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户话里如果有版本、环境、目的、变更说明、工单号这类上下文，主动提取成 comment 传进来，不要等用户专门提备注；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
-      comment: { type: 'string', description: '云效运行备注。只放版本、环境、目的、变更说明、工单号这类备注性上下文（例如「预发布版本」）；变量赋值（如「TEST_NAME 为 30」）不要写进这里，用 envs。弹窗会预填' },
-      envs: { type: 'json', description: '云效运行变量覆盖。用户说某个运行变量为某值（例如「TEST_NAME 为 30」）时用这个，不要写进 comment；值支持字符串/数字/布尔。运行配置弹窗会预填' },
+      comment: { type: 'string', description: '云效运行备注。只放版本、环境、目的、变更说明、工单号这类备注性上下文；变量赋值不要写进这里，用 envs。弹窗会预填' },
+      envs: { type: 'json', description: '云效运行变量覆盖。用户指定某个运行变量的值时用这个，不要写进 comment；值支持字符串/数字/布尔。运行配置弹窗会预填' },
       tags: { type: 'json', description: '云效按仓库地址指定的运行 tag，如 { "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }' },
       repoBranches: { type: 'json', description: '云效按仓库地址指定的运行分支（runningBranchs）；多分支模式的集合用 branches，不要用它' },
       artifacts: { type: 'json', description: '云效制品版本：{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }' },
