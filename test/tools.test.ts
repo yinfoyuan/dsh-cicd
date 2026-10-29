@@ -68,13 +68,15 @@ function runIdOf(text: string) {
   return text.match(/runId:\s+([\w.-]+)/)?.[1] ?? ''
 }
 
-it('注册了七个工具', () => {
+it('注册了九个工具', () => {
   assert.deepEqual(tools.map((t: ToolSpec) => t.name).sort(), [
+    'cicd_approve',
     'cicd_cancel',
     'cicd_conflict',
     'cicd_list',
     'cicd_logs',
     'cicd_run',
+    'cicd_runs',
     'cicd_status',
     'cicd_vars',
   ])
@@ -794,6 +796,62 @@ it('cicd_run 云效运行参数：形状不合法时给出可照做的错误', a
   await assert.rejects(
     () => tool('cicd_run').execute({ pipeline: 'multibranch', artifacts: { unknown: { a: 'b' } } }, execFor()),
     /只支持 pipeline \/ acr \/ packages/,
+  )
+})
+
+it('cicd_runs 输出平台侧历史', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      runs: async () => ([
+        { externalId: '101', status: 'succeeded', startedAt: new Date('2026-10-29T01:00:00Z').toISOString(), durationMs: 180_000, triggerMode: 4 },
+        { externalId: '102', status: 'running', startedAt: new Date('2026-10-29T02:00:00Z').toISOString(), triggerMode: 1 },
+      ]),
+    },
+    options: {},
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_runs')
+    .execute({}, execFor())
+  assert.match(result.text, /#101/)
+  assert.match(result.text, /API/)
+  assert.match(result.text, /#102/)
+  assert.match(result.text, /手动/)
+})
+
+it('cicd_approve 必须 confirm，且 pass/refuse 走 runner', async () => {
+  let called: { action?: string } | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      approve: async (_project: Project, opts: { action?: string }) => {
+        called = opts
+        return {
+          record: {
+            runId: 'r1',
+            pipeline: 'deploy',
+            title: 'deploy',
+            type: 'yunxiao',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+          },
+          note: '已通过人工卡点：阶段「审批」任务「人工卡点」',
+        }
+      },
+    },
+    options: {},
+  })
+  const approveTool = stubTools.find((t: ToolSpec) => t.name === 'cicd_approve')
+
+  await assert.rejects(
+    () => approveTool.execute({ runId: 'r1', action: 'pass' }, execFor()),
+    /confirm/,
+  )
+  const result = await approveTool.execute({ runId: 'r1', action: 'pass', confirm: true }, execFor())
+  assert.equal(called?.action, 'pass')
+  assert.match(result.text, /已通过人工卡点/)
+  await assert.rejects(
+    () => approveTool.execute({ runId: 'r1', action: 'maybe', confirm: true }, execFor()),
+    /pass 或 refuse/,
   )
 })
 

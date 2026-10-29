@@ -2,8 +2,10 @@ import type { ChildProcess } from 'node:child_process'
 import type { WriteStream } from 'node:fs'
 import type { ConflictInfo } from './conflict.js'
 import type {
+  ApprovalAction,
   LogOptions,
   Pipeline,
+  PipelineRunSummary,
   PipelineVariable,
   PluginContext,
   PollResult,
@@ -312,6 +314,57 @@ export class Runner {
       throw new PipelineError('只有云效（yunxiao）流水线有运行变量。', 'shell 流水线没有平台运行变量。')
     const provider = createProvider(target, await this.#envFor(project, target))
     return provider.variables ? provider.variables() : []
+  }
+
+  /** 只读：平台侧最近运行列表（不含变量值/日志）。 */
+  async runs(project: Project, { pipeline, limit = 10 }: { pipeline?: string, limit?: number } = {}): Promise<PipelineRunSummary[]> {
+    const name = String(pipeline ?? '').trim()
+    const yunxiao = Object.values(project.config.pipelines).filter(item => item.type === 'yunxiao')
+    const target = name
+      ? project.config.pipelines[name]
+      : (yunxiao.length === 1 ? yunxiao[0] : undefined)
+    if (!target) {
+      if (name)
+        throw new PipelineError(`没有名为「${name}」的流水线。已配置：${Object.keys(project.config.pipelines).join('、')}`)
+      throw new PipelineError(
+        yunxiao.length > 1 ? '有多条云效流水线，请指定 pipeline。' : '当前项目没有云效流水线。',
+        yunxiao.length > 1 ? `可用：${yunxiao.map(item => item.name).join('、')}` : '先用 cicd_list 查看配置。',
+      )
+    }
+    if (target.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有平台运行历史。', 'shell 流水线请查本地运行记录。')
+    const provider = createProvider(target, await this.#envFor(project, target))
+    return provider.runs ? provider.runs(limit) : []
+  }
+
+  /** 写操作：通过/拒绝人工卡点；必须显式 confirm。 */
+  async approve(
+    project: Project,
+    { runId, action, confirm }: { runId?: string, action?: string, confirm?: boolean } = {},
+  ): Promise<{ record: RunRecord, note: string }> {
+    if (!confirm)
+      throw new PipelineError('人工卡点审批必须显式确认（confirm: true）。', '先把要操作的环境、阶段和动作告诉用户并得到同意。')
+    const id = String(runId ?? '').trim()
+    if (!id)
+      throw new PipelineError('缺少 runId。', '用 cicd_status / cicd_runs 找到运行。')
+    if (action !== 'pass' && action !== 'refuse')
+      throw new PipelineError('action 只能是 pass 或 refuse。')
+    const record = loadRecord(project.runsDir, id)
+    if (!record)
+      throw new PipelineError(`找不到运行记录：${id}`, '用 cicd_list / cicd_status 查看最近的 runId。')
+    if (record.status !== 'running')
+      throw new PipelineError(`运行已经是 ${record.status}，没有可审批的人工卡点。`)
+    const pipeline = project.config.pipelines[record.pipeline]
+    if (!pipeline)
+      throw new PipelineError(`流水线「${record.pipeline}」已从配置里移除，无法审批。`)
+    if (pipeline.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有人工卡点。', 'shell 流水线没有平台审批。')
+    const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
+    if (!provider.approve)
+      throw new PipelineError('当前平台适配器不支持人工卡点审批。')
+    const out = await provider.approve(record, action as ApprovalAction)
+    const refreshed = (await this.refresh(project, record).catch(() => record)) ?? record
+    return { record: refreshed, note: out.note ?? '' }
   }
 
   #runShell(project: Project, pipeline: ShellPipeline, record: RunRecord): RunRecord {

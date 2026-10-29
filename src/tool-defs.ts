@@ -22,12 +22,13 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { ConfigError } from './config.js'
-import { conflictWakeText, environmentLabel, followUpText, ICON, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
+import { conflictWakeText, environmentLabel, fmtTime, followUpText, ICON, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
 import { resolveProject } from './project.js'
 import { askBranches, describeChoice } from './prompt.js'
-import { getYunxiaoBranchState } from './providers.js'
+import { getYunxiaoBranchState, triggerModeLabel } from './providers.js'
 import {
   ConfirmRequired,
+  durationText,
   PipelineError,
 
 } from './runner.js'
@@ -189,6 +190,47 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           if (root)
             return { text: missingConfigText(root) }
         }
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'cicd_runs',
+    description: '只读：列出云效侧最近若干次运行（状态、开始时间、耗时、触发方式），不含日志和变量值。用户问「云效上最近跑过什么」「上周那次部署」或 DSH 重启/别人触发导致本地查不到时用它；具体某次运行用 cicd_status 查。',
+    parameters: {
+      pipeline: { type: 'string', description: '流水线名称；当前项目只有一条云效流水线时可省略' },
+      limit: { type: 'number', description: '最多返回几条（1-30，默认 10）' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => true,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        const runs = await runner.runs(project, {
+          ...(typeof args.pipeline === 'string' ? { pipeline: args.pipeline } : {}),
+          ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        })
+        if (runs.length === 0)
+          return { text: '云效侧没有查到运行记录。' }
+        const lines = runs.map((item) => {
+          const trigger = triggerModeLabel(item.triggerMode)
+          const started = item.startedAt ? fmtTime(item.startedAt) : ''
+          const duration = item.durationMs ? `（${durationText(item.durationMs)}）` : ''
+          return `${ICON[item.status] ?? '•'} #${item.externalId} ${item.status}${trigger ? ` · ${trigger}` : ''}${started ? ` · ${started}` : ''}${duration}`
+        })
+        return {
+          text: [
+            `云效最近运行（只读，${runs.length} 条）：`,
+            ...lines,
+            '',
+            '这是平台侧历史，不依赖本地 .dsh/cicd-runs；查某次状态用 cicd_status。',
+            '注意：云效列表里「用户取消」也会显示 FAIL，要区分取消/失败请看 cicd_status 的详情。',
+          ].join('\n'),
+        }
+      }
+      catch (error) {
         throw new Error(errorText(error))
       }
     },
@@ -579,6 +621,44 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
         const project = resolveProject(exec, options)
         const record = await runner.status(project, { ...(typeof args.runId === 'string' ? { runId: args.runId } : {}), ...(typeof args.pipeline === 'string' ? { pipeline: args.pipeline } : {}) })
         return { text: recordText(record) }
+      }
+      catch (error) {
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'cicd_approve',
+    description: '对正在等待人工确认的云效人工卡点执行「通过」或「拒绝」。只在运行确实处于等待人工确认时使用；必须先向用户复述要操作的环境、阶段和动作并得到明确同意，再传 confirm:true。插件不会自动决定；拒绝没有原因字段。',
+    parameters: {
+      runId: { type: 'string', required: true, description: '运行 id' },
+      action: { type: 'string', required: true, description: 'pass（通过）或 refuse（拒绝）' },
+      confirm: { type: 'boolean', description: '必须传 true：表示已获得用户明确同意' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 60_000,
+    isConcurrencySafe: () => false,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        if (args.confirm !== true)
+          throw new PipelineError('人工卡点审批必须由用户明确同意（confirm: true）。', '先把环境、阶段和动作告诉用户，得到同意后再调用。')
+        const action = String(args.action ?? '')
+        if (action !== 'pass' && action !== 'refuse')
+          throw new PipelineError('action 只能是 pass 或 refuse。')
+        const { record, note } = await runner.approve(project, {
+          runId: typeof args.runId === 'string' ? args.runId : undefined,
+          action,
+          confirm: true,
+        })
+        return {
+          text: [
+            note || `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点`,
+            '',
+            recordText(record),
+          ].join('\n'),
+        }
       }
       catch (error) {
         throw new Error(errorText(error))

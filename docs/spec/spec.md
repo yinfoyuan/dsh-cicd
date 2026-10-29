@@ -52,9 +52,13 @@
 | 工具 | 职责 | 是否幂等 |
 |---|---|---|
 | `cicd_list` | 列出配置的流水线与最近一次运行 | 是 |
+| `cicd_runs` | 只读：云效侧最近若干次运行 | 是 |
+| `cicd_vars` | 只读：运行变量定义（不含值） | 是 |
 | `cicd_run` | 触发，立即返回 runId；`followUp:true` 时终态唤醒模型 | 否（会真实执行） |
 | `cicd_status` | 查状态（只查一次）；HTTP 类实时回源 | 是 |
 | `cicd_logs` | 读日志尾部（有上限） | 是 |
+| `cicd_conflict` | 只读：合并冲突信息 | 是 |
+| `cicd_approve` | 通过/拒绝人工卡点（写；必须 confirm） | 否 |
 | `cicd_cancel` | 取消运行 | 否 |
 
 - 标注 `confirm: true` 的流水线，`cicd_run` 必须收到 `confirm: true` 才执行。
@@ -305,6 +309,23 @@
 - client 不在线时：多分支回退到 `ctx.userQuestions` 选分支；变量不弹，全部用平台默认值，
   并在输出里提示「运行配置弹窗不可用」。
 - `preview: true` 只返回分支与变量名（不返回值），不触发。
+
+### 5.21 云效运行历史（cicd_runs）
+
+- 只读 `GET .../pipelines/{pipelineId}/runs?page=1&perPage=N`（N ≤ 30，默认 10）；返回裸数组。
+- 输出：状态、开始时间、耗时、触发方式（1 手动 / 2 定时 / 3 代码提交 / 4 API / 5 流水线 / 6 Webhook）；
+  **不含日志与变量值**。
+- 不依赖本地 `.dsh/cicd-runs`：DSH 重启、换机器、别人触发后仍可查。
+- 平台文档只列 6 个字段，但实测列表含 `status`；缺状态时按 `running` 兜底（兼容行为）。
+
+### 5.22 人工卡点审批（cicd_approve）
+
+- 前置：运行是 `running`，且能找到人工卡点——job `actions[]` 含 `PassPipelineValidate`
+  （或阶段状态 `SWITCH_MANUAL` 兜底）。
+- 工具必须 `confirm: true` 且用户明确同意；`action` 只能 `pass` / `refuse`；拒绝没有原因字段。
+- 平台调用 `POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body，返回裸 `true`。
+- 权限是「流水线运行任务 · 读写」；`action.disable=true` 表示当前 token 无审批权，要明确报错。
+- 审批成功后刷新一次状态；后台跟踪继续；**任何情况下都不得自动审批**。
 
 ## 6. 数据模型
 

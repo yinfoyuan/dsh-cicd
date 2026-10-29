@@ -1,7 +1,9 @@
 import type {
+  ApprovalAction,
   EnvMap,
   LogOptions,
   Pipeline,
+  PipelineRunSummary,
   PipelineVariable,
   PollResult,
   Provider,
@@ -26,12 +28,19 @@ import type {
 import process from 'node:process'
 import { TERMINAL } from './state.js'
 
+interface YunxiaoJobAction {
+  type?: string
+  disable?: boolean
+  params?: unknown
+}
+
 interface YunxiaoJob {
   id?: string | number
   name?: string
   jobSign?: string
   status?: string
   result?: string
+  actions?: YunxiaoJobAction[]
 }
 
 interface YunxiaoStage {
@@ -48,6 +57,37 @@ interface YunxiaoRun {
   object?: YunxiaoRun
   pipelineRunId?: string | number
   id?: string | number
+}
+
+interface YunxiaoRunListItem {
+  pipelineRunId?: string | number
+  id?: string | number
+  status?: string
+  startTime?: number
+  endTime?: number
+  triggerMode?: number
+  creatorAccountId?: string
+}
+
+/** 云效时间戳是毫秒；非法/缺失返回空串。 */
+function epochIso(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
+}
+
+/** 云效 triggerMode 的可读标签。 */
+export function triggerModeLabel(mode?: number): string {
+  switch (Number(mode)) {
+    case 1: return '手动'
+    case 2: return '定时'
+    case 3: return '代码提交'
+    case 4: return 'API'
+    case 5: return '流水线'
+    case 6: return 'Webhook'
+    default: return ''
+  }
 }
 
 interface YunxiaoPipelineDetail {
@@ -201,24 +241,59 @@ export function summarizeStages(run: unknown): string {
   return `阶段 ${active.index + 1}/${list.length} · ${active.name}（${label[active.state]}）`
 }
 
+export interface ManualGate {
+  stage: string
+  job: string
+  jobId: string | number
+  /** 当前 token 是否有权审批（云效 action.disable=false 才可点）。 */
+  canApprove: boolean
+}
+
+const GATE_ACTION = /PassPipelineValidate|RefusePipelineValidate|RefusePipelineValidator/i
+
 /**
- * 运行是否在等人工操作（人工卡点/手动切换）：云效 stage 的 `SWITCH_MANUAL` 等状态。
- * 返回等待位置（阶段/任务）；没有等待返回空串。
+ * 找人工卡点：优先看 job 的 `actions[]`（云效用 PassPipelineValidate 标记可审批），
+ * 其次退回阶段状态 `SWITCH_MANUAL`。拿不到返回 null。
  */
-export function waitingFor(run: unknown): string {
+export function findManualGate(run: unknown): ManualGate | null {
   const detail = run as YunxiaoRun
   const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
-  for (const stage of stages) {
-    if (STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
-      return `阶段「${stage?.name ?? '未命名'}」`
-  }
+
   for (const stage of stages) {
     for (const job of stage?.stageInfo?.jobs ?? []) {
-      if (JOB_WAITING.has(String(job?.status ?? '').toUpperCase()))
-        return `任务「${job?.name ?? job?.jobSign ?? job?.id ?? '未命名'}」`
+      const action = (job.actions ?? []).find(item => GATE_ACTION.test(String(item?.type ?? '')))
+      if (action && job.id !== undefined) {
+        return {
+          stage: stage?.name ?? '未命名阶段',
+          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
+          jobId: job.id,
+          canApprove: action.disable !== true,
+        }
+      }
     }
   }
-  return ''
+
+  for (const stage of stages) {
+    if (!STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
+      continue
+    const job = (stage?.stageInfo?.jobs ?? []).find(item => item.id !== undefined)
+    return {
+      stage: stage?.name ?? '未命名阶段',
+      job: job?.name ?? job?.jobSign ?? '人工卡点',
+      jobId: job?.id ?? '',
+      canApprove: true,
+    }
+  }
+  return null
+}
+
+/**
+ * 运行是否在等人工操作（人工卡点/手动切换）：返回等待位置（阶段）。
+ * 没有等待返回空串。
+ */
+export function waitingFor(run: unknown): string {
+  const gate = findManualGate(run)
+  return gate ? `阶段「${gate.stage}」` : ''
 }
 
 /**
@@ -612,6 +687,48 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         const status = (error as { httpStatus?: number }).httpStatus
         throw new Error(`读取云效运行变量失败${status ? `（HTTP ${status}）` : ''}：请检查 token / 权限 / 组织与流水线 ID`)
       }
+    },
+    /** 只读：平台侧最近运行（不含变量值/日志）。 */
+    async runs(limit: number): Promise<PipelineRunSummary[]> {
+      const perPage = Math.min(Math.max(Math.trunc(limit) || 10, 1), 30)
+      const { data } = await fetchJson(`${base}${basePath}/runs?page=1&perPage=${perPage}`, { headers: headers() })
+      const list: YunxiaoRunListItem[] = Array.isArray(data)
+        ? data as YunxiaoRunListItem[]
+        : (data as { object?: YunxiaoRunListItem[] }).object ?? []
+      return list
+        .map((item): PipelineRunSummary => ({
+          externalId: String(item.pipelineRunId ?? item.id ?? ''),
+          status: normalizeStatus(item.status),
+          ...(item.status ? { rawStatus: String(item.status) } : {}),
+          startedAt: epochIso(item.startTime),
+          ...(item.endTime ? { finishedAt: epochIso(item.endTime) } : {}),
+          ...(typeof item.startTime === 'number' && typeof item.endTime === 'number' && item.endTime >= item.startTime
+            ? { durationMs: item.endTime - item.startTime }
+            : {}),
+          ...(typeof item.triggerMode === 'number' ? { triggerMode: item.triggerMode } : {}),
+          ...(item.creatorAccountId ? { creatorAccountId: String(item.creatorAccountId) } : {}),
+        }))
+        .filter(item => item.externalId)
+    },
+    /** 写操作：通过/拒绝人工卡点（云效无 body，返回裸 boolean）。 */
+    async approve(record: RunRecord, action: ApprovalAction): Promise<{ note?: string }> {
+      const { data } = await fetchJson(`${base}${runUrl(record.externalId ?? '')}`, { headers: headers() })
+      const gate = findManualGate(runOf(data))
+      if (!gate)
+        throw new Error('这次运行现在没有等待人工确认的卡点（可能已经处理，或不需要审批）')
+      if (gate.jobId === '' || gate.jobId === undefined)
+        throw new Error('找到了人工卡点阶段，但没有可用的 jobId，无法审批（请到云效页面操作）')
+      if (!gate.canApprove)
+        throw new Error('当前访问令牌没有该人工卡点的审批权限（云效 action.disable=true）')
+      const verb = action === 'pass' ? 'pass' : 'refuse'
+      const { text } = await fetchText(`${base}${basePath}/pipelineRuns/${record.externalId}/jobs/${gate.jobId}/${verb}`, {
+        method: 'POST',
+        headers: headers(),
+      })
+      const raw = text.trim()
+      if (raw !== 'true' && raw !== '1')
+        throw new Error(`云效没有确认审批成功：${raw.slice(0, 120)}`)
+      return { note: `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点：阶段「${gate.stage}」任务「${gate.job}」` }
     },
     async cancel(record: RunRecord): Promise<{ note?: string }> {
       const { text } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {

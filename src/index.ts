@@ -9,7 +9,8 @@ import type { DefineTool, PluginContext, PluginOptions, ToolSpec } from './types
  * 各自看到各自的流水线。
  *
  * 注册的工具：
- *   cicd_list / cicd_run / cicd_status / cicd_logs / cicd_conflict / cicd_cancel
+ *   cicd_list / cicd_runs / cicd_vars / cicd_run / cicd_status / cicd_logs /
+ *   cicd_conflict / cicd_approve / cicd_cancel
  *
  * @module dsh-cicd
  */

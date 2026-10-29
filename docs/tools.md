@@ -42,6 +42,27 @@
 
 > `[test · testing]` 是环境元数据（`environment` + `tier`），只影响展示。
 
+## cicd_runs
+
+只读：列出云效侧最近若干次运行，不依赖本地记录，不含日志和变量值。DSH 重启、换机器或别人触发后也能查。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pipeline` | string | | 流水线名称；当前项目只有一条云效流水线时可省略 |
+| `limit` | number | | 最多返回几条（1-30，默认 10） |
+
+示例输出：
+
+```
+云效最近运行（只读，2 条）：
+✅ #101 succeeded · API · 2026-10-29 09:00:00（3m0s）
+⏳ #102 running · 手动 · 2026-10-29 10:00:00
+```
+
+- 数据来自 `ListPipelineRuns`；触发方式 1 手动 / 2 定时 / 3 代码提交 / 4 API / 5 流水线 / 6 Webhook；
+- 不含日志与变量值；看某次运行的本地详情用 `cicd_status`；
+- 云效列表里「用户取消」也显示 `FAIL`，要区分取消/失败请看 `cicd_status` 的详情。
+
 ## cicd_run
 
 触发一条流水线，**立即返回** `runId`（异步，不阻塞）。触发后插件会自动开始**后台跟踪**：
@@ -174,6 +195,21 @@
 2. 在 release 分支解决冲突并推送；
 3. 由用户回云效运行页点「Conflict Resolved」；
 4. 恢复后后台跟踪继续通知；插件不会自动点按钮。
+
+## cicd_approve
+
+对正在等待人工确认的云效人工卡点执行「通过」或「拒绝」。**写操作**：必须用户明确同意并传 `confirm: true`；插件不会自动决定。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `runId` | string | ✅ | 运行 id |
+| `action` | string | ✅ | `pass`（通过）或 `refuse`（拒绝） |
+| `confirm` | boolean | ✅ | 必须是 `true`：表示已获得用户明确同意 |
+
+- 只在运行确实处于等待人工确认时可用；没有卡点会明确报错；
+- 云效接口是 `POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body；拒绝**没有**原因字段；
+- 权限要求「流水线运行任务」读写；当前 token 无审批权限时会报错；
+- 审批后运行继续，后台跟踪会提示 `▶ 人工确认已完成`，终态再通知。
 
 ## cicd_cancel
 
@@ -318,9 +354,11 @@
 
 ```
 cicd_list                        # 看有哪些
+  → cicd_runs { pipeline }       # 云效侧最近运行（只读，找回 run）
   → cicd_vars { pipeline }       # 需要覆盖运行变量时，先看变量名（不读值）
   → cicd_run { pipeline }        # 触发，拿 runId；本轮到此结束
                                   # 有后续动作时加 followUp:true，终态自动唤醒
+  → cicd_approve { runId, action: "pass", confirm: true }  # 等待人工卡点时
   → cicd_status { runId }        # 用户之后主动问进度时查一次
   → cicd_logs { runId }          # 失败时看日志
   → cicd_cancel { runId }        # 需要中止时

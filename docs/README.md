@@ -4,7 +4,7 @@
 |---|---|---|
 | [README](../README.md) | 使用者 | 安装、配置示例、字段说明、排错 |
 | [AGENTS.md](../AGENTS.md) | 在本仓库工作的智能体 | 仓库地图、命令、不可破坏的约定、提交检查清单 |
-| [docs/tools.md](./tools.md) | 模型 / 集成方 | 七个工具的参数、默认值、行为、示例输出 |
+| [docs/tools.md](./tools.md) | 模型 / 集成方 | 九个工具的参数、默认值、行为、示例输出 |
 | [docs/spec/spec.md](./spec/spec.md) | 开发者 / 评审者 | 功能与非功能需求、数据模型、验收标准、变更流程 |
 | [docs/adr/README.md](./adr/README.md) | 开发者 / 评审者 | 架构决策记录索引（为什么这么设计） |
 | [docs/roadmap.md](./roadmap.md) | 产品 / 开发者 | 云效迭代排期：P0/P1/P2、平台接口、验收节奏 |

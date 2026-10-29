@@ -174,6 +174,20 @@ export interface LogOptions {
   maxChars?: number
 }
 
+/** 平台侧运行历史的一条摘要（只读；不含变量值/日志）。 */export interface PipelineRunSummary {
+  externalId: string
+  status: RunStatus
+  rawStatus?: string
+  startedAt: string
+  finishedAt?: string
+  durationMs?: number
+  /** 云效 triggerMode：1 手动 / 2 定时 / 3 代码提交 / 4 API / 5 流水线 / 6 Webhook。 */
+  triggerMode?: number
+  creatorAccountId?: string
+}
+
+export type ApprovalAction = 'pass' | 'refuse'
+
 /** 每种平台适配器的统一接口。 */
 export interface Provider {
   trigger: (input: TriggerInput) => Promise<TriggerResult>
@@ -183,6 +197,10 @@ export interface Provider {
   conflictLogs?: (record: RunRecord) => Promise<string>
   /** 只读：流水线运行变量定义（只有元数据，不含值）；没有实现时返回空。 */
   variables?: () => Promise<PipelineVariable[]>
+  /** 只读：平台侧最近运行列表；没有实现时返回空。 */
+  runs?: (limit: number) => Promise<PipelineRunSummary[]>
+  /** 写操作：通过/拒绝人工卡点；没有卡点时抛错。 */
+  approve?: (record: RunRecord, action: ApprovalAction) => Promise<{ note?: string }>
   cancel: (record: RunRecord) => Promise<{ note?: string }>
 }
 
