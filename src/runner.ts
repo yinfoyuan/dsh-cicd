@@ -365,7 +365,15 @@ export class Runner {
     if (!provider.approve)
       throw new PipelineError('当前平台适配器不支持人工卡点审批。')
     const out = await provider.approve(record, action as ApprovalAction)
+    if (out.canceled)
+      this.#userCanceled.add(record.runId)
     const refreshed = (await this.refresh(project, record).catch(() => record)) ?? record
+    if (out.canceled) {
+      refreshed.status = 'canceled'
+      refreshed.canceledByUser = true
+      refreshed.finishedAt = refreshed.finishedAt ?? new Date().toISOString()
+      saveRecord(project.runsDir, refreshed)
+    }
     return { record: refreshed, note: out.note ?? '' }
   }
 

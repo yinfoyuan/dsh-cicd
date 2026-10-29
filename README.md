@@ -122,7 +122,7 @@ CI / 无界面场景可用进程环境变量；插件**不再读取**项目里�
 | 冲突在哪、哪些文件 | `cicd_conflict`（只读） |
 | 这条流水线有哪些运行变量 | `cicd_vars`（只读，不读取值） |
 | 云效上最近跑过什么 | `cicd_runs`（只读） |
-| 通过/拒绝人工卡点 | `cicd_approve`（写，必须 `confirm:true`） |
+| 通过/拒绝人工卡点或手动阶段 | `cicd_approve`（写，必须 `confirm:true`；手动阶段拒绝=取消运行） |
 
 触发类流水线（`confirm: true`）需要用户同意后，模型才会带 `confirm: true` 执行。
 

@@ -203,14 +203,15 @@
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `runId` | string | ✅ | 运行 id |
-| `action` | string | ✅ | `pass`（通过/开始）或 `refuse`（拒绝，仅人工卡点） |
+| `action` | string | ✅ | `pass`（通过/开始）或 `refuse`（拒绝；手动阶段等价取消运行） |
 | `confirm` | boolean | ✅ | 必须是 `true`：表示已获得用户明确同意 |
 
 - 人工卡点（job action `PassPipelineValidate`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，拒绝**没有**原因字段；
-- 手动触发阶段（阶段 `SWITCH_MANUAL` / job action `ExecutePipelineJobRun`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start`；
-  这个阶段**没有拒绝接口**，要终止请用 `cicd_cancel`；
+- 手动触发阶段（阶段 `SWITCH_MANUAL` / job action `ExecutePipelineJobRun`）：
+  - `pass`：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start` 开始；
+  - `refuse`：云效没有阶段级拒绝接口，等价为**取消整个运行**（`PUT .../runs/{runId}`）；
 - 权限要求「流水线运行任务」读写；当前 token 无权限时会明确报错；
-- 操作成功后运行继续，后台跟踪会提示继续，终态再通知。
+- 操作成功后运行继续（或按拒绝取消），后台跟踪会提示，终态再通知。
 
 ## cicd_cancel
 

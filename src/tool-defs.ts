@@ -630,10 +630,10 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_approve',
-    description: '对正在等待人工确认的云效运行执行操作：人工卡点用 pass/refuse，手动触发阶段用 pass（开始，走 /start；没有拒绝接口）。只在运行确实处于等待人工确认时使用；必须先向用户复述要操作的环境、阶段和动作并得到明确同意，再传 confirm:true。插件不会自动决定。',
+    description: '对正在等待人工确认的云效运行执行操作：人工卡点用 pass/refuse；手动触发阶段 pass 走 /start 开始，refuse 等价取消整个运行。只在运行确实处于等待人工确认时使用；必须先向用户复述要操作的环境、阶段和动作并得到明确同意，再传 confirm:true。插件不会自动决定。',
     parameters: {
       runId: { type: 'string', required: true, description: '运行 id' },
-      action: { type: 'string', required: true, description: 'pass（通过/开始）或 refuse（拒绝，仅人工卡点）' },
+      action: { type: 'string', required: true, description: 'pass（通过/开始）或 refuse（拒绝；手动阶段等价取消运行）' },
       confirm: { type: 'boolean', description: '必须传 true：表示已获得用户明确同意' },
     },
     output: TEXT_OUTPUT,

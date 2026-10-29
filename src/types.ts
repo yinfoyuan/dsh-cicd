@@ -200,7 +200,7 @@ export interface Provider {
   /** 只读：平台侧最近运行列表；没有实现时返回空。 */
   runs?: (limit: number) => Promise<PipelineRunSummary[]>
   /** 写操作：通过/拒绝人工卡点；没有卡点时抛错。 */
-  approve?: (record: RunRecord, action: ApprovalAction) => Promise<{ note?: string }>
+  approve?: (record: RunRecord, action: ApprovalAction) => Promise<{ note?: string, canceled?: boolean }>
   cancel: (record: RunRecord) => Promise<{ note?: string }>
 }
 

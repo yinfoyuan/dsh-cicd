@@ -728,8 +728,9 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         }))
         .filter(item => item.externalId)
     },
-    /** 写操作：通过/拒绝人工卡点（云效无 body，返回裸 boolean）。 */
-    async approve(record: RunRecord, action: ApprovalAction): Promise<{ note?: string }> {
+    /** 写操作：通过/拒绝人工卡点；手动阶段的拒绝等价于取消运行（云效无拒绝接口）。 */
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 卡点/手动阶段/取消三类分支集中在一处，拆开反而分散
+    async approve(record: RunRecord, action: ApprovalAction): Promise<{ note?: string, canceled?: boolean }> {
       const { data } = await fetchJson(`${base}${runUrl(record.externalId ?? '')}`, { headers: headers() })
       const gate = findManualGate(runOf(data))
       if (!gate)
@@ -738,8 +739,16 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         throw new Error('找到了人工卡点阶段，但没有可用的 jobId，无法审批（请到云效页面操作）')
       if (!gate.canApprove)
         throw new Error('当前访问令牌没有该人工卡点/手动阶段的操作权限（云效 action.disable=true）')
-      if (gate.kind === 'start' && action === 'refuse')
-        throw new Error('这是手动触发阶段，没有「拒绝」接口；要终止请用 cicd_cancel。')
+      if (gate.kind === 'start' && action === 'refuse') {
+        const { text: cancelText } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {
+          method: 'PUT',
+          headers: headers(),
+        })
+        const canceledRaw = cancelText.trim()
+        if (canceledRaw !== 'true' && canceledRaw !== '1')
+          throw new Error(`云效没有确认取消成功：${canceledRaw.slice(0, 120)}`)
+        return { note: `已拒绝手动阶段并取消运行：阶段「${gate.stage}」`, canceled: true }
+      }
       const verb = gate.kind === 'start' ? 'start' : (action === 'pass' ? 'pass' : 'refuse')
       const { text } = await fetchText(`${base}${basePath}/pipelineRuns/${record.externalId}/jobs/${gate.jobId}/${verb}`, {
         method: 'POST',

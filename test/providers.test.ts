@@ -131,6 +131,9 @@ beforeAll(async () => {
       if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/pipelineRuns/1/jobs/11/start') {
         return send(200, 'true', { 'content-type': 'text/plain' })
       }
+      if (req.method === 'PUT' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/runs/1') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P10/runs/1') {
         return send(200, JSON.stringify({
           status: 'RUNNING',
@@ -501,7 +504,7 @@ it('云效：没有卡点或没有审批权限时明确报错', async () => {
   await assert.rejects(() => denied.approve!(record('1'), 'pass'), /操作权限/)
 })
 
-it('云效：手动触发阶段走 /start，拒绝不支持', async () => {
+it('云效：手动触发阶段 /start；拒绝等价取消运行', async () => {
   const provider = createProvider({
     type: 'yunxiao',
     baseUrl,
@@ -513,10 +516,9 @@ it('云效：手动触发阶段走 /start，拒绝不支持', async () => {
   const started = await provider.approve?.(record('1'), 'pass')
   assert.match(String(started?.note), /已开始手动阶段/)
 
-  await assert.rejects(
-    () => provider.approve!(record('1'), 'refuse'),
-    /没有「拒绝」接口/,
-  )
+  const refused = await provider.approve?.(record('1'), 'refuse')
+  assert.match(String(refused?.note), /已拒绝手动阶段并取消运行/)
+  assert.equal(refused?.canceled, true)
 
   const gate = findManualGate({
     stages: [{
