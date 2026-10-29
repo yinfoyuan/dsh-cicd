@@ -286,8 +286,10 @@
   输入的值只用于本次触发：**不经过模型、不写运行记录/日志/通知、不回显**。
 - 变量输入留空 = 不覆盖，使用云效当前值；只提交非空且属于该流水线变量定义的 key。
 - 触发后 `RunRecord.overriddenVariables` 只记录被覆盖的变量名。
-- 模型可按用户意图用 `cicd_run.runConfig` 覆盖配置：`true` 强制弹、`false` 跳过
-  （用户明确表示这次不改运行变量时）；不传则按流水线配置。
+- 模型可按用户意图用 `cicd_run.runConfig` 覆盖配置：`true` 强制弹；`false` 只跳过变量/备注，
+  分支确认仍会弹（除非 `reusePrevious`）；不传则按流水线配置。
+- 开启 runConfig 的流水线：显式 `branches` 只作为弹窗预选，不再跳过确认；
+  只有 `reusePrevious: true` 才是无弹窗路径。
 - client 不在线时：多分支回退到 `ctx.userQuestions` 选分支；变量不弹，全部用平台默认值，
   并在输出里提示「运行配置弹窗不可用」。
 - `preview: true` 只返回分支与变量名（不返回值），不触发。

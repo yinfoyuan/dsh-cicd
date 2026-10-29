@@ -231,7 +231,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户明确表示这次不改运行变量时传 runConfig:false 跳过。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
@@ -240,11 +240,11 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
       tags: { type: 'json', description: '云效按仓库地址指定的运行 tag，如 { "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }' },
       repoBranches: { type: 'json', description: '云效按仓库地址指定的运行分支（runningBranchs）；多分支模式的集合用 branches，不要用它' },
       artifacts: { type: 'json', description: '云效制品版本：{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }' },
-      branches: { type: 'json', description: '云效多分支模式：本次要新增/替换的运行分支列表，如 ["feature/login"]；显式传了才会跳过弹窗' },
+      branches: { type: 'json', description: '云效多分支模式：本次要新增/替换的运行分支列表，如 ["feature/login"]；只在用户明确给出分支或要求替换时传。开启 runConfig 的流水线里它只是弹窗预选，不会跳过确认' },
       branchMode: { type: 'string', description: '多分支模式处理方式：append（默认，上次 + 本次）或 replace（只用本次）' },
       reusePrevious: { type: 'boolean', description: '当用户明确要求复用上次运行的分支集合（不是本次重新挑选）时传 true：跳过弹窗，直接用上次确认的集合（replace）' },
       interactive: { type: 'boolean', description: '已弃用：默认就是弹窗；传 false 也不会跳过（只有 reusePrevious:true 才跳过）' },
-      runConfig: { type: 'boolean', description: '触发前是否弹「运行配置」弹窗（分支 + 运行变量 + 备注）：默认按流水线配置 runConfig；用户明确表示这次不改运行变量时传 false 跳过，需要强制确认时传 true' },
+      runConfig: { type: 'boolean', description: '触发前是否弹「运行配置」弹窗（分支 + 运行变量 + 备注）：默认按流水线配置 runConfig；用户明确表示这次不改运行变量时传 false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）；需要强制确认时传 true' },
       preview: { type: 'boolean', description: '配合弹窗：只选择分支并返回结果，不真正触发' },
       confirm: { type: 'boolean', description: '对标记 confirm:true 的流水线，在用户确认后传 true' },
       followUp: { type: 'boolean', description: '当用户的诉求超出「触发」时传 true：包括运行结束后继续处理（部署/回滚/分析失败/汇报）或关注运行中的合并冲突、异常。只触发、没有后续诉求时不要传，也不要为了等结果传' },
@@ -287,8 +287,12 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           throw new Error('runConfig 必须是 boolean')
         if (runConfigArg === true && (!pipeline || pipeline.type !== 'yunxiao'))
           throw new Error('runConfig 只支持云效（yunxiao）流水线')
-        const runConfigRequested = pipeline?.type === 'yunxiao'
-          && (runConfigArg === true || (runConfigArg === undefined && pipeline.runConfig === true))
+
+        // 配置开启（或强制 true）时每次触发都确认；runConfig:false 只跳过变量/备注，
+        // 分支确认仍然要弹（除非 reusePrevious 明确复用）。
+        const runConfigConfigured = pipeline?.type === 'yunxiao'
+          && (runConfigArg === true || pipeline.runConfig === true)
+        const skipVariables = runConfigArg === false
         let runConfigWarning = ''
 
         if (reuse) {
@@ -310,9 +314,9 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           params.branchMode = 'replace'
         }
 
-        if (runConfigRequested && pipeline) {
+        if (runConfigConfigured && pipeline) {
           try {
-            const variables = await runner.variables(project, { pipeline: pipelineName })
+            const variables = skipVariables ? [] : await runner.variables(project, { pipeline: pipelineName })
             let state: YunxiaoBranchState | null = null
             if (!reuse && pipeline.branchMode !== 'off')
               state = await (branchState ?? getYunxiaoBranchState)(pipeline, project.env)
@@ -320,31 +324,42 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             const showBranches = !reuse && state?.isBranchMode === true
             const saved = readBranchSelection(project.root, pipeline.name)
             const candidates = [...new Set([...(state?.previous ?? []), ...(saved?.selected ?? [])])]
-            const previous = candidates.filter(branch => !(saved?.removed ?? []).includes(branch))
+            const selected = candidates.filter(branch => !(saved?.removed ?? []).includes(branch))
+            // 开了 runConfig 的流水线：显式 branches 只做弹窗预选，不再跳过确认。
+            const branchInput = args.branches !== undefined ? args.branches : params.branches
+            const requested = Array.isArray(branchInput)
+              ? branchInput.map(branch => String(branch).trim()).filter(Boolean)
+              : typeof branchInput === 'string' ? [branchInput.trim()].filter(Boolean) : []
+            const previous = [...new Set(requested.length > 0 ? requested : selected)]
+
+            const needDialog = showBranches || !skipVariables
             const dialogOptions: RunConfigOptions = {
               title: pipeline.title || pipeline.name,
               previous,
               showBranches,
               variables,
-              showComment: true,
+              showComment: !skipVariables,
               ...(pipeline.environment ? { environment: pipeline.environment } : {}),
               ...(pipeline.tier ? { tier: pipeline.tier } : {}),
               agent: exec?.agent,
               signal: exec?.signal,
             }
 
-            const pending = runDialog?.(dialogOptions)
-            let choice: RunConfigChoice
-            if (pending) {
-              choice = await pending
-            }
-            else {
-              // client 未加载：分支回退到通用提问；变量不弹，全部用云效默认值。
-              const branches = showBranches
-                ? await (branchDialog ?? ((opts: AskBranchesOptions) => askBranches(ctx!, opts)))(dialogOptions)
-                : undefined
-              choice = { ...(branches ? { branches } : {}), envs: {} }
-              runConfigWarning = '运行配置弹窗不可用（client 未加载）：本次未修改变量，使用云效默认值'
+            let choice: RunConfigChoice = { envs: {} }
+            if (needDialog) {
+              const pending = runDialog?.(dialogOptions)
+              if (pending) {
+                choice = await pending
+              }
+              else {
+                // client 未加载：分支回退到通用提问；变量不弹，全部用云效默认值。
+                const branches = showBranches
+                  ? await (branchDialog ?? ((opts: AskBranchesOptions) => askBranches(ctx!, opts)))(dialogOptions)
+                  : undefined
+                choice = { ...(branches ? { branches } : {}), envs: {} }
+                if (!skipVariables)
+                  runConfigWarning = '运行配置弹窗不可用（client 未加载）：本次未修改变量，使用云效默认值'
+              }
             }
 
             if (choice.branches) {

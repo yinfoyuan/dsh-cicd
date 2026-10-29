@@ -877,7 +877,7 @@ it('cicd_run runConfig:true 弹运行配置，变量值进参数但不回显', a
   assert.doesNotMatch(result.text, /value-a/)
 })
 
-it('cicd_run 按配置 runConfig:true 弹窗；runConfig:false 跳过', async () => {
+it('cicd_run 按配置 runConfig:true 弹窗；runConfig:false 且无可确认分支时不弹', async () => {
   let calls = 0
   const makeTools = () => buildToolDefinitions({
     defineTool,
@@ -988,6 +988,80 @@ it('cicd_run runConfig 但 client 不在线：分支回退，变量用默认值�
   assert.equal(branchDialogCalled, true)
   assert.match(result.text, /运行配置弹窗不可用/)
   assert.match(result.text, /使用云效默认值/)
+})
+
+it('cicd_run runConfig:false 只跳过变量，分支仍然确认', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => {
+        throw new Error('runConfig:false 时不应读取变量')
+      },
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: true, previous: ['main'] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({
+        branches: { branches: ['main'], kept: ['main'], removed: [], added: [] },
+        envs: {},
+      })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', runConfig: false, branches: ['main'] }, execFor())
+  assert.equal(dialogOptions?.showBranches, true)
+  assert.deepEqual(dialogOptions?.variables, [])
+  assert.equal(dialogOptions?.showComment, false)
+  assert.deepEqual(dialogOptions?.previous, ['main'])
+  assert.deepEqual(captured, { branches: ['main'], branchMode: 'replace' })
+})
+
+it('cicd_run 开了 runConfig 时显式 branches 只做预选，不跳过确认', async () => {
+  let called = false
+  let dialogOptions: RunConfigOptions | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'auto-config',
+        title: '自动运行配置',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: true, previous: ['main'] }),
+    runDialog: (options: RunConfigOptions) => {
+      called = true
+      dialogOptions = options
+      return Promise.resolve({
+        branches: { branches: ['feat-x'], kept: [], removed: [], added: ['feat-x'] },
+        envs: {},
+      })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', branches: ['feat-x'] }, execFor())
+  assert.equal(called, true)
+  assert.equal(dialogOptions?.showBranches, true)
+  assert.deepEqual(dialogOptions?.previous, ['feat-x'])
 })
 
 it('runner：envs 值不落运行记录，只保留变量名', async () => {

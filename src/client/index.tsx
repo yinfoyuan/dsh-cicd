@@ -311,7 +311,9 @@ function BranchDialog(): ReactElement | null {
                 : null}
             </div>
             <div className="dshp-subtitle">
-              {runConfigMode ? '运行配置 · 变量留空 = 使用云效当前值' : '多分支运行 · 勾选 = 保留，取消勾选 = 本次移除'}
+              {runConfigMode
+                ? (variables.length > 0 ? '运行配置 · 变量留空 = 使用云效当前值' : '分支确认 · 本次不修改运行变量')
+                : '多分支运行 · 勾选 = 保留，取消勾选 = 本次移除'}
             </div>
           </div>
 
