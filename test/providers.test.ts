@@ -116,6 +116,21 @@ beforeAll(async () => {
           }],
         }))
       }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [{
+            name: '命令',
+            stageInfo: {
+              status: 'SWITCH_MANUAL',
+              jobs: [{ id: 11, name: '执行命令', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+            },
+          }],
+        }))
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/pipelineRuns/1/jobs/11/start') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P10/runs/1') {
         return send(200, JSON.stringify({
           status: 'RUNNING',
@@ -460,6 +475,7 @@ it('云效：人工卡点按 actions 定位并 pass/refuse', async () => {
     }],
   })
   assert.equal(gate?.jobId, 9)
+  assert.equal(gate?.kind, 'validate')
   assert.equal(gate?.canApprove, true)
 })
 
@@ -482,7 +498,37 @@ it('云效：没有卡点或没有审批权限时明确报错', async () => {
     tokenEnv: 'YUNXIAO_TOKEN',
     params: {},
   })
-  await assert.rejects(() => denied.approve!(record('1'), 'pass'), /审批权限/)
+  await assert.rejects(() => denied.approve!(record('1'), 'pass'), /操作权限/)
+})
+
+it('云效：手动触发阶段走 /start，拒绝不支持', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P15',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const started = await provider.approve?.(record('1'), 'pass')
+  assert.match(String(started?.note), /已开始手动阶段/)
+
+  await assert.rejects(
+    () => provider.approve!(record('1'), 'refuse'),
+    /没有「拒绝」接口/,
+  )
+
+  const gate = findManualGate({
+    stages: [{
+      name: '命令',
+      stageInfo: {
+        status: 'SWITCH_MANUAL',
+        jobs: [{ id: 11, name: '执行命令', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+      },
+    }],
+  })
+  assert.equal(gate?.kind, 'start')
+  assert.equal(gate?.jobId, 11)
 })
 
 it('云效：summarizeStages 从 jobs 推断当前阶段', () => {

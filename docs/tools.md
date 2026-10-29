@@ -198,18 +198,19 @@
 
 ## cicd_approve
 
-对正在等待人工确认的云效人工卡点执行「通过」或「拒绝」。**写操作**：必须用户明确同意并传 `confirm: true`；插件不会自动决定。
+对正在等待人工确认的云效运行执行操作。**写操作**：必须用户明确同意并传 `confirm: true`；插件不会自动决定。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `runId` | string | ✅ | 运行 id |
-| `action` | string | ✅ | `pass`（通过）或 `refuse`（拒绝） |
+| `action` | string | ✅ | `pass`（通过/开始）或 `refuse`（拒绝，仅人工卡点） |
 | `confirm` | boolean | ✅ | 必须是 `true`：表示已获得用户明确同意 |
 
-- 只在运行确实处于等待人工确认时可用；没有卡点会明确报错；
-- 云效接口是 `POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body；拒绝**没有**原因字段；
-- 权限要求「流水线运行任务」读写；当前 token 无审批权限时会报错；
-- 审批后运行继续，后台跟踪会提示 `▶ 人工确认已完成`，终态再通知。
+- 人工卡点（job action `PassPipelineValidate`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，拒绝**没有**原因字段；
+- 手动触发阶段（阶段 `SWITCH_MANUAL` / job action `ExecutePipelineJobRun`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start`；
+  这个阶段**没有拒绝接口**，要终止请用 `cicd_cancel`；
+- 权限要求「流水线运行任务」读写；当前 token 无权限时会明确报错；
+- 操作成功后运行继续，后台跟踪会提示继续，终态再通知。
 
 ## cicd_cancel
 

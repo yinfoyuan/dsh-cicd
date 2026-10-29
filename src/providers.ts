@@ -245,15 +245,20 @@ export interface ManualGate {
   stage: string
   job: string
   jobId: string | number
-  /** 当前 token 是否有权审批（云效 action.disable=false 才可点）。 */
+  /** validate=人工卡点（pass/refuse）；start=手动触发阶段（start）。 */
+  kind: 'validate' | 'start'
+  /** 当前 token 是否有权操作（云效 action.disable=false 才可点）。 */
   canApprove: boolean
 }
 
 const GATE_ACTION = /PassPipelineValidate|RefusePipelineValidate|RefusePipelineValidator/i
+const START_ACTION = /^ExecutePipelineJobRun$/i
 
 /**
- * 找人工卡点：优先看 job 的 `actions[]`（云效用 PassPipelineValidate 标记可审批），
- * 其次退回阶段状态 `SWITCH_MANUAL`。拿不到返回 null。
+ * 找人工卡点/手动阶段：
+ * - job 的 `actions[]` 含 PassPipelineValidate → 人工卡点（/pass /refuse）；
+ * - job 的 `actions[]` 含 ExecutePipelineJobRun → 手动触发阶段（/start）；
+ * - 兜底：阶段状态 `SWITCH_MANUAL`。
  */
 export function findManualGate(run: unknown): ManualGate | null {
   const detail = run as YunxiaoRun
@@ -261,13 +266,25 @@ export function findManualGate(run: unknown): ManualGate | null {
 
   for (const stage of stages) {
     for (const job of stage?.stageInfo?.jobs ?? []) {
-      const action = (job.actions ?? []).find(item => GATE_ACTION.test(String(item?.type ?? '')))
-      if (action && job.id !== undefined) {
+      const actions = job.actions ?? []
+      const validate = actions.find(item => GATE_ACTION.test(String(item?.type ?? '')))
+      if (validate && job.id !== undefined) {
         return {
           stage: stage?.name ?? '未命名阶段',
           job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
           jobId: job.id,
-          canApprove: action.disable !== true,
+          kind: 'validate',
+          canApprove: validate.disable !== true,
+        }
+      }
+      const start = actions.find(item => START_ACTION.test(String(item?.type ?? '')))
+      if (start && job.id !== undefined) {
+        return {
+          stage: stage?.name ?? '未命名阶段',
+          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
+          jobId: job.id,
+          kind: 'start',
+          canApprove: start.disable !== true,
         }
       }
     }
@@ -281,6 +298,7 @@ export function findManualGate(run: unknown): ManualGate | null {
       stage: stage?.name ?? '未命名阶段',
       job: job?.name ?? job?.jobSign ?? '人工卡点',
       jobId: job?.id ?? '',
+      kind: 'start',
       canApprove: true,
     }
   }
@@ -719,16 +737,22 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
       if (gate.jobId === '' || gate.jobId === undefined)
         throw new Error('找到了人工卡点阶段，但没有可用的 jobId，无法审批（请到云效页面操作）')
       if (!gate.canApprove)
-        throw new Error('当前访问令牌没有该人工卡点的审批权限（云效 action.disable=true）')
-      const verb = action === 'pass' ? 'pass' : 'refuse'
+        throw new Error('当前访问令牌没有该人工卡点/手动阶段的操作权限（云效 action.disable=true）')
+      if (gate.kind === 'start' && action === 'refuse')
+        throw new Error('这是手动触发阶段，没有「拒绝」接口；要终止请用 cicd_cancel。')
+      const verb = gate.kind === 'start' ? 'start' : (action === 'pass' ? 'pass' : 'refuse')
       const { text } = await fetchText(`${base}${basePath}/pipelineRuns/${record.externalId}/jobs/${gate.jobId}/${verb}`, {
         method: 'POST',
         headers: headers(),
       })
       const raw = text.trim()
       if (raw !== 'true' && raw !== '1')
-        throw new Error(`云效没有确认审批成功：${raw.slice(0, 120)}`)
-      return { note: `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点：阶段「${gate.stage}」任务「${gate.job}」` }
+        throw new Error(`云效没有确认操作成功：${raw.slice(0, 120)}`)
+      return {
+        note: gate.kind === 'start'
+          ? `已开始手动阶段：阶段「${gate.stage}」任务「${gate.job}」`
+          : `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点：阶段「${gate.stage}」任务「${gate.job}」`,
+      }
     },
     async cancel(record: RunRecord): Promise<{ note?: string }> {
       const { text } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {

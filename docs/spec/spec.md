@@ -320,12 +320,14 @@
 
 ### 5.22 人工卡点审批（cicd_approve）
 
-- 前置：运行是 `running`，且能找到人工卡点——job `actions[]` 含 `PassPipelineValidate`
-  （或阶段状态 `SWITCH_MANUAL` 兜底）。
-- 工具必须 `confirm: true` 且用户明确同意；`action` 只能 `pass` / `refuse`；拒绝没有原因字段。
-- 平台调用 `POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body，返回裸 `true`。
-- 权限是「流水线运行任务 · 读写」；`action.disable=true` 表示当前 token 无审批权，要明确报错。
-- 审批成功后刷新一次状态；后台跟踪继续；**任何情况下都不得自动审批**。
+- 前置：运行是 `running`，且能找到等待点——分两类：
+  - **人工卡点**：job `actions[]` 含 `PassPipelineValidate`；
+  - **手动触发阶段**：job `actions[]` 含 `ExecutePipelineJobRun`（阶段状态 `SWITCH_MANUAL` 兜底）。
+- 工具必须 `confirm: true` 且用户明确同意；`action` 只能 `pass` / `refuse`。
+- 人工卡点：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body，返回裸 `true`；拒绝没有原因字段。
+- 手动触发阶段：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start`；**没有拒绝接口**，终止请用 `cicd_cancel`。
+- 权限是「流水线运行任务 · 读写」；`action.disable=true` 表示当前 token 无操作权，要明确报错。
+- 操作成功后刷新一次状态；后台跟踪继续；**任何情况下都不得自动操作**。
 
 ## 6. 数据模型
 
