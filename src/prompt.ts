@@ -171,7 +171,7 @@ export interface RunConfigOptions {
   variables: PipelineVariable[]
   /** 是否显示运行备注输入框。 */
   showComment: boolean
-  /** 初始备注（模型从用户话里提取的版本/目的，例如「预发布版本」）；弹窗预填。 */
+  /** 初始备注（模型从用户话里识别的运行上下文，例如版本/环境/目的）；弹窗预填。 */
   comment?: string
   environment?: string
   tier?: string

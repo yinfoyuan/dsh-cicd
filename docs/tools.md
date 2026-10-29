@@ -52,7 +52,7 @@
 |---|---|---|---|
 | `pipeline` | string | ✅ | 流水线名称 |
 | `params` | json | | 传给平台的参数（分支、环境变量等） |
-| `comment` | string | | 云效运行备注。用户提到的版本/目的（例如「预发布版本」）把原话带上；运行配置弹窗会预填，用户可再改 |
+| `comment` | string | | 云效运行备注。模型把用户话里值得记录的运行上下文原话带上（版本、环境、目的、变更说明、工单号等，例如「预发布版本」）；运行配置弹窗会预填，用户可再改 |
 | `envs` | json | | 云效运行变量，如 `{ "APP_ENV": "test" }`；值支持字符串/数字/布尔。不确定有哪些变量时先用 `cicd_vars` 查 |
 | `tags` | json | | 云效按仓库地址指定的运行 tag，如 `{ "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }` |
 | `repoBranches` | json | | 云效按仓库地址指定的运行分支（`runningBranchs`）；多分支模式用 `branches`，不要用它 |
