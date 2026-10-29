@@ -84,6 +84,7 @@ interface PendingRequest {
   showBranches?: boolean
   showComment?: boolean
   comment?: string
+  envs?: Record<string, string>
   environment?: string
   tier?: string
   resolve: (answer: ClientAnswer) => void
@@ -301,6 +302,7 @@ export class BranchBroker {
         showBranches: options.showBranches,
         showComment: options.showComment,
         comment: options.comment,
+        envs: options.envs,
         environment: options.environment,
         tier: options.tier,
         timer,
@@ -410,6 +412,7 @@ export class BranchBroker {
               ...(this.#pending.showBranches !== undefined ? { showBranches: this.#pending.showBranches } : {}),
               ...(this.#pending.showComment !== undefined ? { showComment: this.#pending.showComment } : {}),
               ...(this.#pending.comment ? { comment: this.#pending.comment } : {}),
+              ...(this.#pending.envs ? { envs: this.#pending.envs } : {}),
               ...(this.#pending.environment ? { environment: this.#pending.environment } : {}),
               ...(this.#pending.tier ? { tier: this.#pending.tier } : {}),
             }

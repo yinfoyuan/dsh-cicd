@@ -970,6 +970,67 @@ it('cicd_run 弹窗清空备注时不再发送', async () => {
   assert.equal(captured?.comment, undefined)
 })
 
+it('cicd_run 把 envs 预填到弹窗并原样提交', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'TEST_NAME' }]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          overriddenVariables: ['TEST_NAME'],
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({ envs: { TEST_NAME: '30' } })
+    },
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', envs: { TEST_NAME: 30 } }, execFor())
+  assert.deepEqual(dialogOptions?.envs, { TEST_NAME: '30' })
+  assert.deepEqual(captured?.envs, { TEST_NAME: '30' })
+  assert.match(result.text, /变量覆盖：TEST_NAME/)
+})
+
+it('cicd_run 弹窗清空变量时删除覆盖', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'TEST_NAME' }]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.resolve({ envs: {} }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', envs: { TEST_NAME: 30 } }, execFor())
+  assert.equal(captured?.envs, undefined)
+})
+
 it('cicd_run 按配置 runConfig:true 弹窗；runConfig:false 且无可确认分支时不弹', async () => {
   let calls = 0
   const makeTools = () => buildToolDefinitions({

@@ -173,6 +173,8 @@ export interface RunConfigOptions {
   showComment: boolean
   /** 初始备注（模型从用户话里识别的运行上下文，例如版本/环境/目的）；弹窗预填。 */
   comment?: string
+  /** 初始变量覆盖（模型从用户话里识别的「某变量为某值」）；弹窗预填，用户可改。 */
+  envs?: Record<string, string>
   environment?: string
   tier?: string
   agent?: unknown
