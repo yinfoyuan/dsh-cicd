@@ -183,6 +183,8 @@ export class Runner {
   children: Map<string, ShellMeta> = new Map()
   /** 同一个 runId 的并发 wait 共用一次轮询，避免重复打接口。 */
   waiting: Map<string, Promise<WaitResult>> = new Map()
+  /** 本进程内用户主动取消过的 runId：后台轮询不得把它覆盖回 running/无标记。 */
+  #userCanceled = new Set<string>()
   #ctx?: PluginContext
 
   constructor(ctx?: PluginContext) {
@@ -466,6 +468,17 @@ export class Runner {
     if (!record)
       return record
 
+    if (this.#userCanceled.has(record.runId)) {
+      const next: RunRecord = {
+        ...record,
+        status: 'canceled',
+        canceledByUser: true,
+        finishedAt: record.finishedAt ?? new Date().toISOString(),
+      }
+      saveRecord(project.runsDir, next)
+      return next
+    }
+
     if (record.type === 'shell') {
       const meta = this.children.get(record.runId)
       if (meta && !meta.done) {
@@ -534,6 +547,13 @@ export class Runner {
       }
       delete next.checkError
       delete next.checkErrorRetryable
+      // 轮询期间用户取消了：以取消为准，别用旧快照覆盖 canceledByUser。
+      if (this.#userCanceled.has(record.runId)) {
+        next.status = 'canceled'
+        next.canceledByUser = true
+        next.finishedAt = next.finishedAt ?? new Date().toISOString()
+        delete next.waiting
+      }
       saveRecord(project.runsDir, next)
       return next
     }
@@ -560,6 +580,13 @@ export class Runner {
       )
     }
     // 本地已取消是终态：平台事后可能把 run 标成 FAIL，不要把它改回失败。
+    if (this.#userCanceled.has(record.runId)) {
+      record.canceledByUser = true
+      if (record.status === 'running') {
+        record.status = 'canceled'
+        record.finishedAt = record.finishedAt ?? new Date().toISOString()
+      }
+    }
     if (record.status === 'canceled')
       return record
     return (await this.refresh(project, record)) as RunRecord
@@ -714,6 +741,7 @@ export class Runner {
       return record
 
     if (record.type === 'shell') {
+      this.#userCanceled.add(record.runId)
       const meta = this.children.get(record.runId)
       if (meta) {
         meta.canceled = true
@@ -729,7 +757,15 @@ export class Runner {
     if (!pipeline)
       throw new PipelineError(`流水线「${record.pipeline}」已从配置里移除，无法取消。`)
     const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
-    const out = await provider.cancel(record)
+    this.#userCanceled.add(record.runId)
+    let out
+    try {
+      out = await provider.cancel(record)
+    }
+    catch (error) {
+      this.#userCanceled.delete(record.runId)
+      throw error
+    }
     const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: out?.note ?? '', canceledByUser: true }
     saveRecord(project.runsDir, next)
     return next
