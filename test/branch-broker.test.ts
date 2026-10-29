@@ -28,6 +28,7 @@ interface BranchRequest {
   previous: string[]
   showBranches?: boolean
   showComment?: boolean
+  comment?: string
   variables?: Array<{ key: string }>
   environment?: string
   tier?: string
@@ -160,12 +161,14 @@ it('broker：运行配置请求 → 变量白名单 + 空值不覆盖', async ()
     previous: ['main'],
     showBranches: true,
     showComment: true,
+    comment: '预发布版本',
     variables: [{ key: 'A' }, { key: 'B', encrypted: true }],
   })
   const { request } = await getRequest()
   assert.equal(request!.kind, 'runConfig')
   assert.equal(request!.showBranches, true)
   assert.equal(request!.showComment, true)
+  assert.equal(request!.comment, '预发布版本')
   assert.equal(request!.variables?.length, 2)
 
   const answer = await postAnswer({

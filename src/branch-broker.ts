@@ -83,6 +83,7 @@ interface PendingRequest {
   variables?: PipelineVariable[]
   showBranches?: boolean
   showComment?: boolean
+  comment?: string
   environment?: string
   tier?: string
   resolve: (answer: ClientAnswer) => void
@@ -299,6 +300,7 @@ export class BranchBroker {
         variables: options.variables,
         showBranches: options.showBranches,
         showComment: options.showComment,
+        comment: options.comment,
         environment: options.environment,
         tier: options.tier,
         timer,
@@ -407,6 +409,7 @@ export class BranchBroker {
               ...(this.#pending.variables ? { variables: this.#pending.variables } : {}),
               ...(this.#pending.showBranches !== undefined ? { showBranches: this.#pending.showBranches } : {}),
               ...(this.#pending.showComment !== undefined ? { showComment: this.#pending.showComment } : {}),
+              ...(this.#pending.comment ? { comment: this.#pending.comment } : {}),
               ...(this.#pending.environment ? { environment: this.#pending.environment } : {}),
               ...(this.#pending.tier ? { tier: this.#pending.tier } : {}),
             }

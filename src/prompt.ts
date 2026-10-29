@@ -171,6 +171,8 @@ export interface RunConfigOptions {
   variables: PipelineVariable[]
   /** 是否显示运行备注输入框。 */
   showComment: boolean
+  /** 初始备注（模型从用户话里提取的版本/目的，例如「预发布版本」）；弹窗预填。 */
+  comment?: string
   environment?: string
   tier?: string
   agent?: unknown
@@ -205,10 +207,10 @@ export function parseRunConfigAnswer(
     if (text)
       envs[key] = text
   }
-  const comment = String(answer.comment ?? '').trim()
+  const comment = typeof answer.comment === 'string' ? answer.comment.trim() : undefined
   return {
     ...(branches ? { branches } : {}),
     envs,
-    ...(comment ? { comment } : {}),
+    ...(comment !== undefined ? { comment } : {}),
   }
 }

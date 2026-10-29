@@ -877,6 +877,65 @@ it('cicd_run runConfig:true 弹运行配置，变量值进参数但不回显', a
   assert.doesNotMatch(result.text, /value-a/)
 })
 
+it('cicd_run 把用户话里的备注预填到弹窗，弹窗留空时保留', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({ envs: {} })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', comment: '预发布版本' }, execFor())
+  assert.equal(dialogOptions?.comment, '预发布版本')
+  assert.equal(captured?.comment, '预发布版本')
+})
+
+it('cicd_run 弹窗清空备注时不再发送', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.resolve({ envs: {}, comment: '' }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', comment: '预发布版本' }, execFor())
+  assert.equal(captured?.comment, undefined)
+})
+
 it('cicd_run 按配置 runConfig:true 弹窗；runConfig:false 且无可确认分支时不弹', async () => {
   let calls = 0
   const makeTools = () => buildToolDefinitions({

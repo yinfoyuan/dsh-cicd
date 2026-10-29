@@ -118,14 +118,26 @@ it('parseRunConfigAnswer：变量只认白名单，空值不覆盖', () => {
   assert.equal(choice.comment, '发版')
 })
 
-it('parseRunConfigAnswer：不显示分支时不要求分支；变量全空 = 不覆盖', () => {
+it('parseRunConfigAnswer：不显示分支时不要求分支；变量全空 = 不覆盖；备注清空 = 空串', () => {
   const choice = parseRunConfigAnswer(
     { previous: [], showBranches: false, variables: [{ key: 'A' }] },
     { envs: {}, comment: '  ' },
   )
   assert.equal(choice.branches, undefined)
   assert.deepEqual(choice.envs, {})
-  assert.equal(choice.comment, undefined)
+  assert.equal(choice.comment, '')
+
+  const untouched = parseRunConfigAnswer(
+    { previous: [], showBranches: false, variables: [] },
+    { envs: {}, comment: '预发布版本' },
+  )
+  assert.equal(untouched.comment, '预发布版本')
+
+  const absent = parseRunConfigAnswer(
+    { previous: [], showBranches: false, variables: [] },
+    { envs: {} },
+  )
+  assert.equal(absent.comment, undefined)
 })
 
 it('parseRunConfigAnswer：显示分支但全取消时报错', () => {

@@ -235,7 +235,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
-      comment: { type: 'string', description: '云效运行备注（显示在运行记录里）' },
+      comment: { type: 'string', description: '云效运行备注。用户提到的版本/目的（例如「预发布版本」）把原话带上；运行配置弹窗会预填，用户可再改' },
       envs: { type: 'json', description: '云效运行变量，如 { "APP_ENV": "test" }；值支持字符串/数字/布尔' },
       tags: { type: 'json', description: '云效按仓库地址指定的运行 tag，如 { "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }' },
       repoBranches: { type: 'json', description: '云效按仓库地址指定的运行分支（runningBranchs）；多分支模式的集合用 branches，不要用它' },
@@ -333,12 +333,16 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             const previous = [...new Set(requested.length > 0 ? requested : selected)]
 
             const needDialog = showBranches || !skipVariables
+            const initialComment = typeof args.comment === 'string'
+              ? args.comment.trim()
+              : typeof params.comment === 'string' ? params.comment.trim() : ''
             const dialogOptions: RunConfigOptions = {
               title: pipeline.title || pipeline.name,
               previous,
               showBranches,
               variables,
               showComment: !skipVariables,
+              ...(initialComment ? { comment: initialComment } : {}),
               ...(pipeline.environment ? { environment: pipeline.environment } : {}),
               ...(pipeline.tier ? { tier: pipeline.tier } : {}),
               agent: exec?.agent,
@@ -374,8 +378,12 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             }
             if (Object.keys(choice.envs).length > 0)
               params.envs = choice.envs
-            if (choice.comment)
-              params.comment = choice.comment
+            if (choice.comment !== undefined) {
+              if (choice.comment)
+                params.comment = choice.comment
+              else
+                delete params.comment
+            }
 
             if (args.preview === true) {
               return {

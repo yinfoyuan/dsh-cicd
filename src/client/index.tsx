@@ -149,6 +149,7 @@ interface BranchRequest {
   previous: string[]
   showBranches?: boolean
   showComment?: boolean
+  comment?: string
   variables?: DialogVariable[]
   environment?: string
   tier?: string
@@ -194,7 +195,7 @@ function BranchDialog(): ReactElement | null {
             setKeep(new Set<string>(data.request.previous))
             setCustom('')
             setEnvs({})
-            setComment('')
+            setComment(String(data.request.comment ?? ''))
             setError('')
             setBusy(false)
           }
