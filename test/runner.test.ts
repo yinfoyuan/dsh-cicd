@@ -48,12 +48,14 @@ it('取消后 refresh 不会被旧快照覆盖成 running', async () => {
     type: 'shell',
     status: 'running',
     startedAt: new Date().toISOString(),
+    waiting: '阶段「审批」',
   }
   saveRecord(project.runsDir, record)
 
   const runner = new Runner()
   const canceled = await runner.cancel(project, { runId: record.runId })
   assert.equal(canceled.status, 'canceled')
+  assert.equal(canceled.waiting, undefined)
 
   // 模拟并发轮询用取消前的快照覆盖文件（没有 canceledByUser）。
   saveRecord(project.runsDir, { ...record, status: 'running' })
@@ -61,4 +63,5 @@ it('取消后 refresh 不会被旧快照覆盖成 running', async () => {
   const refreshed = await runner.refresh(project, { ...record, status: 'running' })
   assert.equal(refreshed?.status, 'canceled')
   assert.equal(refreshed?.canceledByUser, true)
+  assert.equal(refreshed?.waiting, undefined)
 })

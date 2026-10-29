@@ -369,12 +369,25 @@ export class Runner {
       this.#userCanceled.add(record.runId)
     const refreshed = (await this.refresh(project, record).catch(() => record)) ?? record
     if (out.canceled) {
-      refreshed.status = 'canceled'
-      refreshed.canceledByUser = true
-      refreshed.finishedAt = refreshed.finishedAt ?? new Date().toISOString()
-      saveRecord(project.runsDir, refreshed)
+      const canceled = this.#canceledRecord(refreshed, undefined, '已拒绝手动阶段（运行已取消）')
+      saveRecord(project.runsDir, canceled)
+      return { record: canceled, note: out.note ?? '' }
     }
     return { record: refreshed, note: out.note ?? '' }
+  }
+
+  /** 统一生成取消记录：带标记、结束时间，并清掉 waiting/progress 里的等待态。 */
+  #canceledRecord(record: RunRecord, note?: string, progress?: string): RunRecord {
+    const next: RunRecord = {
+      ...record,
+      status: 'canceled',
+      canceledByUser: true,
+      finishedAt: record.finishedAt ?? new Date().toISOString(),
+      ...(note !== undefined ? { note } : {}),
+      ...(progress ? { progress } : {}),
+    }
+    delete next.waiting
+    return next
   }
 
   #runShell(project: Project, pipeline: ShellPipeline, record: RunRecord): RunRecord {
@@ -477,12 +490,7 @@ export class Runner {
       return record
 
     if (this.#userCanceled.has(record.runId)) {
-      const next: RunRecord = {
-        ...record,
-        status: 'canceled',
-        canceledByUser: true,
-        finishedAt: record.finishedAt ?? new Date().toISOString(),
-      }
+      const next = this.#canceledRecord(record)
       saveRecord(project.runsDir, next)
       return next
     }
@@ -594,6 +602,7 @@ export class Runner {
         record.status = 'canceled'
         record.finishedAt = record.finishedAt ?? new Date().toISOString()
       }
+      delete record.waiting
     }
     if (record.status === 'canceled')
       return record
@@ -754,9 +763,9 @@ export class Runner {
       if (meta) {
         meta.canceled = true
         this.#kill(record.runId)
-        return { ...record, status: 'canceled', canceledByUser: true }
+        return this.#canceledRecord(record)
       }
-      const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: '没有找到活动子进程，已标记为取消', canceledByUser: true }
+      const next = this.#canceledRecord(record, '没有找到活动子进程，已标记为取消')
       saveRecord(project.runsDir, next)
       return next
     }
@@ -774,7 +783,7 @@ export class Runner {
       this.#userCanceled.delete(record.runId)
       throw error
     }
-    const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: out?.note ?? '', canceledByUser: true }
+    const next = this.#canceledRecord(record, out?.note ?? '')
     saveRecord(project.runsDir, next)
     return next
   }
