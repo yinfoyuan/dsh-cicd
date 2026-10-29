@@ -462,6 +462,10 @@ export class Runner {
         next.note = out.note
       if (out.progress)
         next.progress = out.progress
+      if (out.waiting)
+        next.waiting = out.waiting
+      else
+        delete next.waiting
       if (out.branches?.length)
         next.branches = out.branches
       if (out.buildUrl)

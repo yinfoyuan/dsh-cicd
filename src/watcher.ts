@@ -67,6 +67,7 @@ export class RunWatcher {
     let delay = FIRST_DELAY_MS
     let lastLogCheck = 0
     let conflictNotified = false
+    let waitingNotified = false
     let hint = ''
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
@@ -121,7 +122,35 @@ export class RunWatcher {
         return
       }
 
-      if (current.progress && current.progress !== lastProgress) {
+      const waitingText = String(current.waiting ?? '')
+      if (waitingText) {
+        // 等待人工操作时不要再刷「阶段运行中」，只提示一次「在等人」。
+        lastProgress = current.progress ?? lastProgress
+        if (!waitingNotified) {
+          waitingNotified = true
+          try {
+            this.#options.notice(
+              `⏸ ${label(current)} 在等人工操作：${waitingText}。请在云效处理（例如人工卡点需要点「通过」），插件不会自动确认。`,
+              project.root,
+              current.runId,
+            )
+          }
+          catch {}
+          try {
+            hooks?.onWaiting?.(current)
+          }
+          catch {}
+        }
+      }
+      else if (waitingNotified) {
+        waitingNotified = false
+        try {
+          this.#options.notice(`▶ ${label(current)} 人工操作已处理，继续运行`, project.root, current.runId)
+        }
+        catch {}
+      }
+
+      if (!waitingText && current.progress && current.progress !== lastProgress) {
         lastProgress = current.progress
         try {
           this.#options.notice(`⏳ ${label(current)} · ${current.progress}`, project.root, current.runId)

@@ -132,6 +132,8 @@ export interface RunRecord {
   variables?: PipelineVariable[]
   /** 本次显式覆盖的运行变量名（只有 key，值不落盘）。 */
   overriddenVariables?: string[]
+  /** 正在等待人工操作（例如人工卡点）；空/未设置为不等待。 */
+  waiting?: string
   /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
   canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */
@@ -159,6 +161,8 @@ export interface PollResult {
   rawStatus?: string
   note?: string
   progress?: string
+  /** 等待人工操作（人工卡点等）的说明；空表示不等待。 */
+  waiting?: string
   buildUrl?: string
   exitCode?: number
   /** 云效多分支模式：本次运行集成的分支。 */
@@ -216,6 +220,8 @@ export interface WatchHooks {
   onTerminal?: (record: RunRecord, hint?: string) => void
   /** 分支集成检测到合并冲突、运行暂停（不是终态）。每次运行只回调一次。 */
   onConflict?: (record: RunRecord) => void
+  /** 检测到运行在等待人工操作（人工卡点等，不是终态）。每次运行只回调一次。 */
+  onWaiting?: (record: RunRecord) => void
 }
 
 /** DSH Agent 句柄里插件用到的部分（`followup` 由 DSH 运行时提供，旧版本可能没有）。 */

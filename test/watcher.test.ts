@@ -95,6 +95,49 @@ it('runWatcher：检测到合并冲突时调用 onConflict（followUp 唤醒入�
   }
 })
 
+it('runWatcher：等待人工确认提示一次，完成后提示继续', async () => {
+  vi.useFakeTimers()
+  try {
+    const project = { root: 'D:/repo' } as Project
+    const waiting = {
+      runId: 'wait-1',
+      pipeline: 'ping',
+      title: 'ping',
+      type: 'yunxiao',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      progress: '阶段 2/3 · 审批（等待人工确认）',
+      waiting: '阶段「审批」等待人工确认',
+    } as RunRecord
+    const resumed = { ...waiting, waiting: undefined, progress: '阶段 2/3 · 审批（运行中）' }
+    let current = waiting
+    const notices: string[] = []
+    const waits: RunRecord[] = []
+    const watcher = new RunWatcher(
+      { status: async () => current, logs: async () => '' },
+      { notice: text => notices.push(text) },
+    )
+    watcher.watch(project, waiting, { onWaiting: record => waits.push(record) })
+    await vi.advanceTimersByTimeAsync(5_000)
+    assert.equal(waits.length, 1)
+    assert.match(notices[0], /等人工操作/)
+
+    // 持续等待不应重复提示。
+    await vi.advanceTimersByTimeAsync(10_000)
+    assert.equal(waits.length, 1)
+    assert.equal(notices.filter(text => /等人工操作/.test(text)).length, 1)
+
+    // 人工处理完成后提示继续。
+    current = resumed
+    await vi.advanceTimersByTimeAsync(15_000)
+    assert.ok(notices.some(text => /继续运行/.test(text)))
+    watcher.dispose()
+  }
+  finally {
+    vi.useRealTimers()
+  }
+})
+
 it('runWatcher：用户主动取消保留 toast，但不唤醒模型', async () => {
   vi.useFakeTimers()
   try {

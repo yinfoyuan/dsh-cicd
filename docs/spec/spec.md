@@ -74,19 +74,22 @@
 - **取消优先**：本地记录一旦是 `canceled`，`status` 不再回源覆盖；云效 run 报 `FAIL`
   但 job `result` 含「用户已取消 / UserCanceled」时也归一为 `canceled`。
 - HTTP 类运行在终态时补算 `durationMs`（`finishedAt - startedAt`）。
+- **等待人工操作不是第六种状态**：run 仍是 `running`；云效阶段状态（如 `SWITCH_MANUAL`）
+  等写入 `RunRecord.waiting`，用于展示与通知，不进 `status`。
 
 ### 5.4 后台跟踪与通知（核心）
 
 - `cicd_run` 返回后启动 `RunWatcher`：5s 起轮询、逐步退避到 15s、最长 45 分钟；
-  阶段变化/终态推 toast，分支冲突暂停时提示手动合并（见 5.14）。
+  阶段变化/终态推 toast，分支冲突暂停时提示手动合并，等待人工确认时提示去云效处理（见 5.14）。
 - `cicd_run` 立即返回，触发后本轮就结束；运行进度由后台跟踪通知（见 5.14）。
 - **不提供等待工具**：状态查询只有 `cicd_status`（每次只查一次，不阻塞）。
 - **followUp 唤醒**（opt-in）：`cicd_run { followUp: true }` 时，`RunWatcher` 在
   终态（`succeeded/failed`；用户主动取消除外）调用 `onTerminal(record, hint)`，并在**首次检测到
-  合并冲突暂停**时调用 `onConflict(record)`；`cicd_run` 组装一条 `source.kind = dsh-cicd`
-  的 user 消息并调用 `agent.followup()`，把模型唤醒继续用户交代的后续动作（冲突时让模型用
-  `cicd_conflict` 读详情、和用户确认解决）。
-  - 冲突暂停只唤醒一次；解决后运行继续，到终态会再唤醒一次（用户要求继续处理时）；
+  合并冲突暂停**时调用 `onConflict(record)`、**首次检测到等待人工确认**时调用 `onWaiting(record)`；
+  `cicd_run` 组装一条 `source.kind = dsh-cicd` 的 user 消息并调用 `agent.followup()`，
+  把模型唤醒继续用户交代的后续动作（冲突时让模型用 `cicd_conflict` 读详情、和用户确认解决；
+  等待人工确认时提醒用户去云效处理，插件不会自动确认）。
+  - 冲突/等待人工确认都只唤醒一次；处理完运行继续，到终态会再唤醒一次（用户要求继续处理时）；
   - **用户主动取消不唤醒**：`cicd_cancel` 写入 `canceledByUser`；watcher 仍推 `⛔` 终态 toast，
     但不调用 `onTerminal`（取消结果已经在工具返回里）。平台侧取消仍按普通终态处理；
   - `followup` 不存在（旧 DSH）、agent 已释放或 DSH 重启（watcher 丢失）时静默退化为只发 toast；
@@ -97,7 +100,8 @@
   - 终态立即返回；400/401/403/404 `fatal`，连续 4 次可重试失败 `gave-up`。
 - 同一 runId 的并发等待共用一次轮询。
 - 等待结果包含 `polls / elapsedMs / budgetSec / budgetSource / lastError`。
-- 云效运行显示阶段进度（`阶段 2/2 · 部署（运行中）`）。
+- 云效运行显示阶段进度（`阶段 2/2 · 部署（运行中）`）；等待人工确认时显示
+  `阶段 2/3 · 审批（等待人工确认）`。
 
 ### 5.5 日志
 
@@ -201,11 +205,15 @@
 - **分支集成冲突**：云效把「合并冲突，请解决后继续」写在 job `result` 里，`poll` 会转成
   `record.note`；watcher 检测到 note（或日志里的 `Merge conflicted, job paused`）时推一条
   `⚠️ 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」`（每次运行只推一次）。
+- **等待人工确认**：云效阶段 `SWITCH_MANUAL`（人工卡点）或任务等待状态会在 `poll` 里转成
+  `record.waiting`；watcher 首次检测到时推 `⏸ 在等人工操作：阶段「审批」等待人工确认…`，
+  处理完成（waiting 消失）再推 `▶ 人工操作已处理，继续运行`；每次运行各提示一次。
 - **没有等待工具**：`cicd_run` 的输出明确要求「本轮到此结束」，禁止 `Start-Sleep`、
   循环 `cicd_status` 或任何轮询；结果由后台 toast 通知，用户之后主动问进度时再用 `cicd_status`。
 - **followUp 唤醒**：`followUp: true` 时终态（用户主动取消除外）会调用 `agent.followup()`，
-  首次检测到合并冲突暂停也会调用一次；分别用 `followUpText()` / `conflictWakeText()` 生成
-  「状态/冲突 + runId + 失败提示 + 不是用户新发言」的消息。其他情况只 toast。
+  首次检测到合并冲突暂停、首次检测到等待人工确认也会各调用一次；分别用
+  `followUpText()` / `conflictWakeText()` / `waitingWakeText()` 生成
+  「状态/冲突/等待 + runId + 提示 + 不是用户新发言」的消息。其他情况只 toast。
 - 多分支流水线**默认必弹窗**：未传 `branches` 且是云效多分支时自动弹；弹窗不可用时**取消触发并报错**
   （不静默按旧分支跑）；只有显式 `branches` 或 `reusePrevious: true`（用户明确要求复用上次集合）跳过弹窗。
 
@@ -314,6 +322,7 @@
 | `branches` | 云效多分支模式：本次集成的分支列表 |
 | `variables` | 云效运行变量副本（仅 key/描述/标记，不含值） |
 | `overriddenVariables` | 本次显式覆盖的运行变量名（只有 key，值不落盘） |
+| `waiting` | 正在等待人工操作（如人工卡点）的说明；空 = 不等待 |
 | `canceledByUser` | 通过 `cicd_cancel` 取消：仍推终态 toast，但不再唤醒模型 |
 | `checkError` / `checkErrorRetryable` | 最近一次查询错误及是否可重试 |
 | `exitCode` | shell 退出码 |

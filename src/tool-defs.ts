@@ -22,7 +22,7 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { ConfigError } from './config.js'
-import { conflictWakeText, environmentLabel, followUpText, ICON, pipelineSummaryLine, recordText } from './format.js'
+import { conflictWakeText, environmentLabel, followUpText, ICON, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
 import { resolveProject } from './project.js'
 import { askBranches, describeChoice } from './prompt.js'
 import { getYunxiaoBranchState } from './providers.js'
@@ -231,7 +231,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户话里如果有版本、环境、目的、变更说明、工单号这类上下文，主动提取成 comment 传进来（例如「预发布版本」），不要等用户专门提备注；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突、等待人工确认、异常，传 followUp:true，终态或检测到冲突/人工确认暂停时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户话里如果有版本、环境、目的、变更说明、工单号这类上下文，主动提取成 comment 传进来（例如「预发布版本」），不要等用户专门提备注；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
@@ -507,6 +507,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           ? {
               onTerminal: (final, hint) => wake(followUpText(final, hint)),
               onConflict: final => wake(conflictWakeText(final)),
+              onWaiting: final => wake(waitingWakeText(final)),
             }
           : undefined
         watch?.(project, record, hooks)
@@ -554,7 +555,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_status',
-    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
+    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态；在等人工确认（例如人工卡点）时输出会带 waiting。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
     parameters: {
       runId: { type: 'string', description: 'cicd_run 返回的运行 id' },
       pipeline: { type: 'string', description: '不传 runId 时，用流水线名查最近一次' },

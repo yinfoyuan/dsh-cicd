@@ -161,8 +161,11 @@ function tokenOf(pipeline: { tokenEnv: string }, env: EnvMap | undefined): strin
 /* ------------------------------- 云效 Flow ------------------------------ */
 const STAGE_DONE = new Set(['SUCCESS', 'SKIP', 'SKIPPED', 'IGNORED'])
 const STAGE_FAIL = new Set(['FAIL', 'FAILED', 'ERROR'])
+/** 阶段/任务在等人工操作（人工卡点等）；云效用 SWITCH_MANUAL 表示「等待手动切换」。 */
+const STAGE_WAITING = new Set(['SWITCH_MANUAL', 'WAITING', 'WAITING_MANUAL', 'MANUAL', 'PAUSED', 'SUSPEND'])
+const JOB_WAITING = new Set(['WAITING', 'PAUSED', 'MANUAL'])
 
-type StageState = 'pending' | 'running' | 'failed' | 'success'
+type StageState = 'pending' | 'running' | 'failed' | 'success' | 'waiting'
 
 /**
  * 从云效 run 详情里抽出「现在跑到哪个阶段」，给等待/状态输出用。
@@ -181,6 +184,8 @@ export function summarizeStages(run: unknown): string {
     let state: StageState = 'pending'
     if (STAGE_FAIL.has(declared) || statuses.some(s => STAGE_FAIL.has(s)))
       state = 'failed'
+    else if (STAGE_WAITING.has(declared) || statuses.some(s => JOB_WAITING.has(s)))
+      state = 'waiting'
     else if (STAGE_DONE.has(declared) || (statuses.length > 0 && statuses.every(s => STAGE_DONE.has(s))))
       state = 'success'
     else if (declared === 'RUNNING' || statuses.some(s => !STAGE_DONE.has(s) && !STAGE_FAIL.has(s)))
@@ -189,10 +194,31 @@ export function summarizeStages(run: unknown): string {
   })
 
   const active = list.find(s => s.state === 'failed')
+    ?? list.find(s => s.state === 'waiting')
     ?? list.find(s => s.state === 'running')
     ?? list[list.length - 1]
-  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始' }
+  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始', waiting: '等待人工确认' }
   return `阶段 ${active.index + 1}/${list.length} · ${active.name}（${label[active.state]}）`
+}
+
+/**
+ * 运行是否在等人工操作（人工卡点/手动切换）：云效 stage 的 `SWITCH_MANUAL` 等状态。
+ * 返回可读说明；没有等待返回空串。
+ */
+export function waitingFor(run: unknown): string {
+  const detail = run as YunxiaoRun
+  const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
+  for (const stage of stages) {
+    if (STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
+      return `阶段「${stage?.name ?? '未命名'}」等待人工确认`
+  }
+  for (const stage of stages) {
+    for (const job of stage?.stageInfo?.jobs ?? []) {
+      if (JOB_WAITING.has(String(job?.status ?? '').toUpperCase()))
+        return `任务「${job?.name ?? job?.jobSign ?? job?.id ?? '未命名'}」等待人工确认`
+    }
+  }
+  return ''
 }
 
 /**
@@ -516,6 +542,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         rawStatus: obj?.status,
         note: pendingConflict(obj) || obj?.statusText,
         progress: summarizeStages(obj),
+        waiting: waitingFor(obj) || undefined,
         branches: parseSourceBranches(obj?.globalParams),
       }
     },

@@ -4,7 +4,7 @@ import type { Pipeline, RunRecord, YunxiaoPipeline } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { afterAll, beforeAll, it } from 'vitest'
-import { createProvider as createProviderTyped, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, summarizeStages } from '../src/providers.js'
+import { createProvider as createProviderTyped, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, summarizeStages, waitingFor } from '../src/providers.js'
 
 /** 测试里的流水线只写用到的字段，这里按 Pipeline 收窄。 */
 function createProvider(pipeline: Partial<Pipeline>): ReturnType<typeof createProviderTyped> {
@@ -56,6 +56,16 @@ beforeAll(async () => {
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42/job/7/log') {
         return send(200, JSON.stringify({ content: 'boom log', last: 1, more: false }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P10/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [
+            { name: '构建', stageInfo: { status: 'SUCCESS', jobs: [{ id: 1, status: 'SUCCESS' }] } },
+            { name: '审批', stageInfo: { status: 'SWITCH_MANUAL', jobs: [{ id: 2, status: 'INIT' }] } },
+            { name: '部署', stageInfo: { status: 'INIT', jobs: [{ id: 3, status: 'INIT' }] } },
+          ],
+        }))
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P9') {
         return send(200, 'secret-value-not-json')
@@ -320,6 +330,30 @@ it('云效：取消走 PUT', async () => {
   })
   const out = await provider.cancel(record('42'))
   assert.match(String(out.note), /true/)
+})
+
+it('云效：SWITCH_MANUAL 识别为等待人工确认', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P10',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const out = await provider.poll(record('1'))
+  assert.equal(out.status, 'running')
+  assert.match(String(out.progress), /等待人工确认/)
+  assert.match(String(out.waiting), /审批/)
+
+  const run = {
+    stages: [
+      { name: '构建', stageInfo: { status: 'SUCCESS', jobs: [{ status: 'SUCCESS' }] } },
+      { name: '审批', stageInfo: { status: 'SWITCH_MANUAL', jobs: [{ status: 'INIT' }] } },
+    ],
+  }
+  assert.match(waitingFor(run), /审批/)
+  assert.equal(waitingFor({ stages: [] }), '')
 })
 
 it('云效：summarizeStages 从 jobs 推断当前阶段', () => {

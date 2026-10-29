@@ -1,7 +1,7 @@
 # 云效迭代排期
 
-- 状态：执行中（P0-1 / Y19 / Y20 已完成，下一步 P0-2 运行历史）
-- 更新：2026-10-28
+- 状态：执行中（P0-1 / Y19 / Y20 / Y21 已完成，下一步 P0-2 运行历史）
+- 更新：2026-10-29
 - 关联：[spec](./spec/spec.md)、[tools](./tools.md)、[landscape](./landscape.md)
 
 > 范围：只排**云效（Alibaba Cloud DevOps / Flow）**侧的迭代。shell 只作为测试辅助，
@@ -29,6 +29,7 @@
 | Y5 | 同流水线并发保护（已有 running 时提示/需 force） | `latestPipelineRun` / `ListPipelineRuns` | ⬜ |
 | Y19 | 运行变量发现与提示：读流水线变量定义，`cicd_vars` 展示、`cicd_run` 提示模型询问 | `pipelineConfig.settings.globalParams` | ✅（只读副本） |
 | Y20 | 运行配置弹窗（`runConfig`）：分支 + 变量 + 备注，空值用默认，值不落盘 | 复用 client overlay + `/dsh-cicd/branch/*` | ✅ |
+| Y21 | 等待人工确认识别与提醒（`SWITCH_MANUAL`）：toast + followUp 唤醒 + `cicd_status` 展示 | 云效 run 详情 `stageInfo.status` | ✅ |
 
 **Y1 细节**（已按官方文档确认形状，`params` 是 JSON 字符串；工具面已实现
 `cicd_run` 的 `comment` / `envs` / `tags` / `repoBranches` / `artifacts`，命名参数优先）：
