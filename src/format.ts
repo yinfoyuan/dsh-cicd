@@ -92,11 +92,11 @@ export function conflictWakeText(record: RunRecord): string {
 export function waitingWakeText(record: RunRecord): string {
   const env = environmentLabel(record)
   return [
-    `【dsh-cicd 后台通知】${env ? `${env} ` : ''}${record.title || record.pipeline} 正在等待人工操作（不是终态）：${record.waiting ?? '等待人工确认'}`,
+    `【dsh-cicd 后台通知】${env ? `${env} ` : ''}${record.title || record.pipeline} 正在等待人工确认（不是终态）：${record.waiting ?? '未知阶段'}`,
     `runId:   ${record.runId}`,
     record.progress ? `progress: ${record.progress}` : '',
     '',
-    '请提醒用户到云效处理（例如人工卡点需要点「通过」）；插件不会自动确认，也不会替你点。',
+    '请提醒用户到云效点「通过」或对应按钮后继续；插件不会自动确认。',
     '处理完成后运行会继续；可再用 cicd_status 查看，完成/失败时会再通知。',
     '（这是插件自动唤醒的消息，不是用户的新发言。）',
   ].filter(Boolean).join('\n')

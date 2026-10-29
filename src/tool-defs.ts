@@ -530,7 +530,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             '',
             `✅ 触发完成，本轮到此结束。`,
             canFollowUp
-              ? `用户要求继续跟进这次运行：终态或检测到合并冲突时会自动唤醒你，现在直接回复用户已触发、你会继续跟进，并结束本轮。`
+              ? `用户要求继续跟进这次运行：终态、检测到合并冲突或等待人工确认时会自动唤醒你，现在直接回复用户已触发、你会继续跟进，并结束本轮。`
               : followUpRequested
                 ? `⚠️ 当前 DSH 不支持自动唤醒；结束后请让用户再问，或用户自己用 cicd_status 查看。`
                 : `请直接回复用户：已触发 ${record.pipeline}（runId: ${record.runId}），后台跟踪中，阶段变化/结束会通知。`,

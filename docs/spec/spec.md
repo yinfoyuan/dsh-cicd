@@ -206,8 +206,8 @@
   `record.note`；watcher 检测到 note（或日志里的 `Merge conflicted, job paused`）时推一条
   `⚠️ 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」`（每次运行只推一次）。
 - **等待人工确认**：云效阶段 `SWITCH_MANUAL`（人工卡点）或任务等待状态会在 `poll` 里转成
-  `record.waiting`；watcher 首次检测到时推 `⏸ 在等人工操作：阶段「审批」等待人工确认…`，
-  处理完成（waiting 消失）再推 `▶ 人工操作已处理，继续运行`；每次运行各提示一次。
+  `record.waiting`；watcher 首次检测到时推 `⏸ 等待人工确认：阶段「审批」…`，
+  处理完成（waiting 消失）再推 `▶ 人工确认已完成，继续运行`；每次运行各提示一次。
 - **没有等待工具**：`cicd_run` 的输出明确要求「本轮到此结束」，禁止 `Start-Sleep`、
   循环 `cicd_status` 或任何轮询；结果由后台 toast 通知，用户之后主动问进度时再用 `cicd_status`。
 - **followUp 唤醒**：`followUp: true` 时终态（用户主动取消除外）会调用 `agent.followup()`，

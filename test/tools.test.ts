@@ -685,12 +685,12 @@ it('cicd_run followUp:true 在终态/冲突时唤醒模型，消息带状态和�
   const waitingRecord = {
     ...conflictRecord,
     note: undefined,
-    waiting: '阶段「审批」等待人工确认',
+    waiting: '阶段「审批」',
     progress: '阶段 2/3 · 审批（等待人工确认）',
   } as RunRecord
   captured[0].onWaiting?.(waitingRecord)
   assert.equal(messages.length, 3)
-  assert.match(messages[2].content[0].text, /等待人工操作/)
+  assert.match(messages[2].content[0].text, /等待人工确认/)
   assert.match(messages[2].content[0].text, /不是终态/)
 })
 

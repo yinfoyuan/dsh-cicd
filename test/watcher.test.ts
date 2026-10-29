@@ -107,7 +107,7 @@ it('runWatcher：等待人工确认提示一次，完成后提示继续', async 
       status: 'running',
       startedAt: new Date().toISOString(),
       progress: '阶段 2/3 · 审批（等待人工确认）',
-      waiting: '阶段「审批」等待人工确认',
+      waiting: '阶段「审批」',
     } as RunRecord
     const resumed = { ...waiting, waiting: undefined, progress: '阶段 2/3 · 审批（运行中）' }
     let current = waiting
@@ -120,12 +120,12 @@ it('runWatcher：等待人工确认提示一次，完成后提示继续', async 
     watcher.watch(project, waiting, { onWaiting: record => waits.push(record) })
     await vi.advanceTimersByTimeAsync(5_000)
     assert.equal(waits.length, 1)
-    assert.match(notices[0], /等人工操作/)
+    assert.match(notices[0], /等待人工确认/)
 
     // 持续等待不应重复提示。
     await vi.advanceTimersByTimeAsync(10_000)
     assert.equal(waits.length, 1)
-    assert.equal(notices.filter(text => /等人工操作/.test(text)).length, 1)
+    assert.equal(notices.filter(text => /等待人工确认/.test(text)).length, 1)
 
     // 人工处理完成后提示继续。
     current = resumed

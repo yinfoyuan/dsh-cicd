@@ -130,7 +130,7 @@ export class RunWatcher {
           waitingNotified = true
           try {
             this.#options.notice(
-              `⏸ ${label(current)} 在等人工操作：${waitingText}。请在云效处理（例如人工卡点需要点「通过」），插件不会自动确认。`,
+              `⏸ ${label(current)} 等待人工确认：${waitingText}。请到云效处理后继续（插件不会自动点）。`,
               project.root,
               current.runId,
             )
@@ -145,7 +145,7 @@ export class RunWatcher {
       else if (waitingNotified) {
         waitingNotified = false
         try {
-          this.#options.notice(`▶ ${label(current)} 人工操作已处理，继续运行`, project.root, current.runId)
+          this.#options.notice(`▶ ${label(current)} 人工确认已完成，继续运行`, project.root, current.runId)
         }
         catch {}
       }

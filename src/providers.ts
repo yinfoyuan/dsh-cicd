@@ -203,19 +203,19 @@ export function summarizeStages(run: unknown): string {
 
 /**
  * 运行是否在等人工操作（人工卡点/手动切换）：云效 stage 的 `SWITCH_MANUAL` 等状态。
- * 返回可读说明；没有等待返回空串。
+ * 返回等待位置（阶段/任务）；没有等待返回空串。
  */
 export function waitingFor(run: unknown): string {
   const detail = run as YunxiaoRun
   const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
   for (const stage of stages) {
     if (STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
-      return `阶段「${stage?.name ?? '未命名'}」等待人工确认`
+      return `阶段「${stage?.name ?? '未命名'}」`
   }
   for (const stage of stages) {
     for (const job of stage?.stageInfo?.jobs ?? []) {
       if (JOB_WAITING.has(String(job?.status ?? '').toUpperCase()))
-        return `任务「${job?.name ?? job?.jobSign ?? job?.id ?? '未命名'}」等待人工确认`
+        return `任务「${job?.name ?? job?.jobSign ?? job?.id ?? '未命名'}」`
     }
   }
   return ''
