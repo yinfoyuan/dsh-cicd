@@ -87,6 +87,7 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
       branchDialog,
       runDialog,
       watch: (project, record, hooks) => watcher.watch(project, record, hooks),
+      muteWaiting: runId => watcher.muteWaiting(runId),
     })
   }
   catch (error) {

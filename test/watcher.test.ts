@@ -169,6 +169,38 @@ it('runWatcher：用户主动取消保留 toast，但不唤醒模型', async () 
   }
 })
 
+it('runWatcher：取消后抑制在途的等待提醒', async () => {
+  vi.useFakeTimers()
+  try {
+    const project = { root: 'D:/repo' } as Project
+    const waiting = {
+      runId: 'mute-1',
+      pipeline: 'ping',
+      title: 'ping',
+      type: 'yunxiao',
+      status: 'running',
+      startedAt: new Date().toISOString(),
+      progress: '阶段 2/3 · 审批（等待人工确认）',
+      waiting: '阶段「审批」',
+    } as RunRecord
+    const notices: string[] = []
+    const waits: RunRecord[] = []
+    const watcher = new RunWatcher(
+      { status: async () => waiting, logs: async () => '' },
+      { notice: text => notices.push(text) },
+    )
+    watcher.watch(project, waiting, { onWaiting: record => waits.push(record) })
+    watcher.muteWaiting('mute-1')
+    await vi.advanceTimersByTimeAsync(20_000)
+    assert.equal(waits.length, 0)
+    assert.equal(notices.filter(text => /等待人工确认/.test(text)).length, 0)
+    watcher.dispose()
+  }
+  finally {
+    vi.useRealTimers()
+  }
+})
+
 it('runWatcher：dispose 后不再安排定时器', () => {
   // 只验证 dispose 语义：runner / project / record 用满足类型的最小桩
   const watcher = new RunWatcher({ status: async () => ({}) as RunRecord, logs: async () => '' }, { notice: () => {} })

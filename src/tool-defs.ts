@@ -150,9 +150,11 @@ export interface BuildToolDeps {
   runDialog?: (options: RunConfigOptions) => Promise<RunConfigChoice> | undefined
   /** 触发后开始后台跟踪（阶段变化/结束主动提示），不阻塞对话。 */
   watch?: (project: Project, record: RunRecord, hooks?: WatchHooks) => void
+  /** 用户取消后抑制在途的「等待人工确认」提醒；测试可不传。 */
+  muteWaiting?: (runId: string) => void
 }
 
-export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, runDialog, watch }: BuildToolDeps): ToolSpec[] {
+export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, runDialog, watch, muteWaiting }: BuildToolDeps): ToolSpec[] {
   const tools: ToolSpec[] = []
 
   tools.push(defineTool({
@@ -667,6 +669,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
       try {
         const project = resolveProject(exec, options)
         const record = await runner.cancel(project, { runId: typeof args.runId === 'string' ? args.runId : undefined })
+        muteWaiting?.(record.runId)
         return { text: recordText(record) }
       }
       catch (error) {

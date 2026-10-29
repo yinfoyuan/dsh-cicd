@@ -797,6 +797,29 @@ it('cicd_run 云效运行参数：形状不合法时给出可照做的错误', a
   )
 })
 
+it('cicd_cancel 取消后抑制等待提醒', async () => {
+  const muted: string[] = []
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      cancel: async () => ({
+        runId: 'r1',
+        pipeline: 'ping',
+        title: 'ping',
+        type: 'shell',
+        status: 'canceled',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    muteWaiting: (runId: string) => muted.push(runId),
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_cancel')
+    .execute({ runId: 'r1' }, execFor())
+  assert.match(result.text, /canceled/)
+  assert.deepEqual(muted, ['r1'])
+})
+
 it('cicd_vars 只列变量名，不输出值', async () => {
   const stubTools = buildToolDefinitions({
     defineTool,
