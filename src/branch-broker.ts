@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import type { AskBranchesOptions, BranchChoice } from './prompt.js'
-import type { PluginContext } from './types.js'
+import type { AskBranchesOptions, BranchChoice, RunConfigChoice, RunConfigOptions } from './prompt.js'
+import type { PipelineVariable, PluginContext } from './types.js'
 /**
  * 分支选择的自定义弹窗通道（host 侧）。
  *
@@ -20,7 +20,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import process from 'node:process'
-import { parseKeepAnswer } from './prompt.js'
+import { parseKeepAnswer, parseRunConfigAnswer } from './prompt.js'
 import { readGlobalSettings } from './settings-store.js'
 
 interface WebServerLike {
@@ -57,6 +57,8 @@ export function defaultNoticeStorePath(): string {
 interface ClientAnswer {
   selected?: string[]
   custom?: string
+  envs?: Record<string, unknown>
+  comment?: string
   cancelled?: boolean
 }
 
@@ -75,8 +77,12 @@ interface ClientNotice {
 
 interface PendingRequest {
   id: string
+  kind: 'branch' | 'runConfig'
   title: string
   previous: string[]
+  variables?: PipelineVariable[]
+  showBranches?: boolean
+  showComment?: boolean
   environment?: string
   tier?: string
   resolve: (answer: ClientAnswer) => void
@@ -236,6 +242,7 @@ export class BranchBroker {
 
       this.#pending = {
         id,
+        kind: 'branch',
         title: options.title,
         previous: options.previous,
         environment: options.environment,
@@ -256,6 +263,55 @@ export class BranchBroker {
               return
             }
             resolve(choice)
+          }
+          catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)))
+          }
+        },
+        reject: (error) => {
+          clearTimeout(timer)
+          if (this.#pending?.id === id)
+            this.#pending = null
+          reject(error)
+        },
+      }
+    })
+  }
+
+  /** 请求「运行配置」弹窗（分支 + 运行变量 + 备注）；client 不可用时由调用方回退。 */
+  askRunConfig(options: RunConfigOptions): Promise<RunConfigChoice> {
+    this.#rejectPending(new Error('运行配置请求被新的运行请求替换'))
+    return new Promise<RunConfigChoice>((resolve, reject) => {
+      const id = randomUUID()
+      const timer = setTimeout(() => {
+        if (this.#pending?.id !== id)
+          return
+        this.#pending = null
+        reject(new Error(`等待运行配置超时（${Math.round(DEFAULT_TIMEOUT_MS / 1000)}s）：请重试，或用 envs / branches 参数直接指定`))
+      }, DEFAULT_TIMEOUT_MS)
+      timer.unref?.()
+
+      this.#pending = {
+        id,
+        kind: 'runConfig',
+        title: options.title,
+        previous: options.previous,
+        variables: options.variables,
+        showBranches: options.showBranches,
+        showComment: options.showComment,
+        environment: options.environment,
+        tier: options.tier,
+        timer,
+        resolve: (answer) => {
+          clearTimeout(timer)
+          if (this.#pending?.id === id)
+            this.#pending = null
+          if (answer.cancelled) {
+            reject(new Error('用户取消了本次运行'))
+            return
+          }
+          try {
+            resolve(parseRunConfigAnswer(options, answer))
           }
           catch (error) {
             reject(error instanceof Error ? error : new Error(String(error)))
@@ -345,8 +401,12 @@ export class BranchBroker {
         request: this.#pending
           ? {
               id: this.#pending.id,
+              kind: this.#pending.kind,
               title: this.#pending.title,
               previous: this.#pending.previous,
+              ...(this.#pending.variables ? { variables: this.#pending.variables } : {}),
+              ...(this.#pending.showBranches !== undefined ? { showBranches: this.#pending.showBranches } : {}),
+              ...(this.#pending.showComment !== undefined ? { showComment: this.#pending.showComment } : {}),
               ...(this.#pending.environment ? { environment: this.#pending.environment } : {}),
               ...(this.#pending.tier ? { tier: this.#pending.tier } : {}),
             }
@@ -362,7 +422,13 @@ export class BranchBroker {
         sendJson(res, 409, { ok: false, error: '没有匹配的分支选择请求' })
         return
       }
-      pending.resolve({ selected: body.selected, custom: body.custom, cancelled: body.cancelled === true })
+      pending.resolve({
+        selected: body.selected,
+        custom: body.custom,
+        envs: body.envs,
+        comment: body.comment,
+        cancelled: body.cancelled === true,
+      })
       sendJson(res, 200, { ok: true })
       return
     }

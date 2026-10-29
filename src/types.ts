@@ -69,6 +69,11 @@ export interface YunxiaoPipeline extends PipelineBase {
    * - off：完全不处理，按普通 params 透传
    */
   branchMode?: 'append' | 'replace' | 'off'
+  /**
+   * 触发前是否弹「运行配置」弹窗（分支 + 运行变量 + 备注）。
+   * 默认 false；模型可按用户意图用 `cicd_run.runConfig` 覆盖。
+   */
+  runConfig?: boolean
 }
 
 export type Pipeline
@@ -125,6 +130,8 @@ export interface RunRecord {
   branches?: string[]
   /** 云效运行变量副本（只有 key/描述/标记，不含值）；触发时写入，供后续展示。 */
   variables?: PipelineVariable[]
+  /** 本次显式覆盖的运行变量名（只有 key，值不落盘）。 */
+  overriddenVariables?: string[]
   /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
   canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */

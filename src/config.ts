@@ -244,6 +244,7 @@ export function loadConfig(configPath: string, { fresh = false, env = process.en
         branchMode: branchMode
           ? (branchMode as 'append' | 'replace' | 'off')
           : undefined,
+        runConfig: body.runConfig === true,
       }
     }
   }

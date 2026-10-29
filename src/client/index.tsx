@@ -41,6 +41,8 @@ const CSS = `
 .dshp-input{width:100%;box-sizing:border-box;padding:9px 10px;border-radius:var(--dsw-radius-sm,8px);border:1px solid var(--dsw-alias-border-l2,rgba(0,0,0,.16));background:var(--dsw-alias-bg-layer-3,#fff);color:var(--dsw-alias-label-primary,#1a1a1a);font:inherit;outline:none;}
 .dshp-input:focus{border-color:var(--dsw-alias-brand-primary,#4d6bfe);}
 .dshp-summary{font-size:12px;color:var(--dsw-alias-label-tertiary,#888);word-break:break-all;}
+.dshp-vars{display:flex;flex-direction:column;gap:10px;}
+.dshp-hint{font-size:12px;line-height:16px;color:var(--dsw-alias-label-tertiary,#888);}
 .dshp-error{font-size:12px;color:var(--dsw-alias-state-error-primary,#d33);}
 .dshp-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:2px;}
 .dshp-btn{box-sizing:border-box;height:32px;padding:0 12px;border-radius:var(--dsw-radius-md,8px);border:.5px solid var(--dsw-alias-border-l4);background:var(--dsw-alias-bg-base,transparent);color:var(--dsw-alias-label-primary,#1a1a1a);font:inherit;font-size:13px;cursor:pointer;}
@@ -132,10 +134,21 @@ const CSS = `
 .dshp-modal-foot{display:flex;justify-content:flex-end;gap:8px;padding-top:4px;}
 `
 
+interface DialogVariable {
+  key: string
+  description?: string
+  encrypted?: boolean
+  masked?: boolean
+}
+
 interface BranchRequest {
   id: string
+  kind?: 'branch' | 'runConfig'
   title: string
   previous: string[]
+  showBranches?: boolean
+  showComment?: boolean
+  variables?: DialogVariable[]
   environment?: string
   tier?: string
 }
@@ -150,10 +163,13 @@ function projectLabel(path?: string): string {
   return clean.split(/[\\/]/).filter(Boolean).pop() ?? ''
 }
 
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 弹窗要同时渲染分支/变量/备注三块，拆组件会打断共享状态
 function BranchDialog(): ReactElement | null {
   const [request, setRequest] = useState<BranchRequest | null>(null)
   const [keep, setKeep] = useState<Set<string>>(() => new Set())
   const [custom, setCustom] = useState('')
+  const [envs, setEnvs] = useState<Record<string, string>>({})
+  const [comment, setComment] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const currentIdRef = useRef('')
@@ -176,6 +192,8 @@ function BranchDialog(): ReactElement | null {
             setRequest(data.request)
             setKeep(new Set<string>(data.request.previous))
             setCustom('')
+            setEnvs({})
+            setComment('')
             setError('')
             setBusy(false)
           }
@@ -202,6 +220,15 @@ function BranchDialog(): ReactElement | null {
   if (!request)
     return null
 
+  const runConfigMode = request.kind === 'runConfig'
+  const showBranches = runConfigMode ? request.showBranches === true : true
+  const variables = request.variables ?? []
+  const filledEnvs = Object.fromEntries(
+    variables
+      .map(variable => [variable.key, (envs[variable.key] ?? '').trim()] as const)
+      .filter(([, value]) => Boolean(value)),
+  )
+
   const added = splitBranches(custom).filter(branch => !request.previous.includes(branch))
   const kept = request.previous.filter(branch => keep.has(branch))
   const branches = [...new Set([...kept, ...added])]
@@ -219,17 +246,25 @@ function BranchDialog(): ReactElement | null {
   const submit = async (): Promise<void> => {
     if (busy)
       return
-    if (branches.length === 0) {
+    if (showBranches && branches.length === 0) {
       setError('多分支流水线至少要有一个运行分支：请至少保留或新增一个')
       return
     }
     setBusy(true)
     setError('')
     try {
+      const payload = runConfigMode
+        ? {
+            id: request.id,
+            envs: filledEnvs,
+            comment,
+            ...(showBranches ? { selected: kept, custom } : {}),
+          }
+        : { id: request.id, selected: kept, custom }
       const res = await fetch(`${PREFIX}/branch/answer`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: request.id, selected: kept, custom }),
+        body: JSON.stringify(payload),
       })
       if (!res.ok)
         throw new Error(`HTTP ${res.status}`)
@@ -262,7 +297,7 @@ function BranchDialog(): ReactElement | null {
     <>
       <style>{CSS}</style>
       <div className="dshp-backdrop">
-        <div className="dshp-card" role="dialog" aria-modal="true" aria-label="选择运行分支">
+        <div className="dshp-card" role="dialog" aria-modal="true" aria-label={runConfigMode ? '运行配置' : '选择运行分支'}>
           <div>
             <div className="dshp-title">
               {request.title}
@@ -274,49 +309,95 @@ function BranchDialog(): ReactElement | null {
                   )
                 : null}
             </div>
-            <div className="dshp-subtitle">多分支运行 · 勾选 = 保留，取消勾选 = 本次移除</div>
+            <div className="dshp-subtitle">
+              {runConfigMode ? '运行配置 · 变量留空 = 使用云效当前值' : '多分支运行 · 勾选 = 保留，取消勾选 = 本次移除'}
+            </div>
           </div>
 
-          <div className="dshp-list">
-            {request.previous.length === 0
-              ? <div className="dshp-empty">上次没有可继承的分支，请在下方输入新增分支</div>
-              : request.previous.map(branch => (
-                  <label key={branch} className="dshp-option">
-                    <input type="checkbox" checked={keep.has(branch)} onChange={() => toggle(branch)} />
-                    <span className="dshp-branch">{branch}</span>
-                  </label>
-                ))}
-          </div>
+          {showBranches
+            ? (
+                <>
+                  <div className="dshp-list">
+                    {request.previous.length === 0
+                      ? <div className="dshp-empty">上次没有可继承的分支，请在下方输入新增分支</div>
+                      : request.previous.map(branch => (
+                          <label key={branch} className="dshp-option">
+                            <input type="checkbox" checked={keep.has(branch)} onChange={() => toggle(branch)} />
+                            <span className="dshp-branch">{branch}</span>
+                          </label>
+                        ))}
+                  </div>
 
-          <div>
-            <div className="dshp-label">新增分支（逗号分隔，可留空）</div>
-            <input
-              className="dshp-input"
-              value={custom}
-              placeholder="例如：feat/login, feat/pay"
-              onChange={event => setCustom(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing)
-                  return
-                event.preventDefault()
-                void submit()
-              }}
-            />
-          </div>
+                  <div>
+                    <div className="dshp-label">新增分支（逗号分隔，可留空）</div>
+                    <input
+                      className="dshp-input"
+                      value={custom}
+                      placeholder="例如：feat/login, feat/pay"
+                      onChange={event => setCustom(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing)
+                          return
+                        event.preventDefault()
+                        void submit()
+                      }}
+                    />
+                  </div>
+                </>
+              )
+            : null}
+
+          {variables.length > 0
+            ? (
+                <div className="dshp-vars">
+                  <div className="dshp-label">运行变量（留空 = 不覆盖，用云效当前值）</div>
+                  {variables.map(variable => (
+                    <label key={variable.key} className="dshp-field">
+                      <span className="dshp-field-label">
+                        {variable.key}
+                        {variable.encrypted || variable.masked ? '（已配置，值不可读）' : ''}
+                      </span>
+                      <input
+                        className="dshp-input"
+                        type={variable.encrypted || variable.masked ? 'password' : 'text'}
+                        autoComplete="off"
+                        value={envs[variable.key] ?? ''}
+                        placeholder={variable.description || '留空 = 不覆盖'}
+                        onChange={event => setEnvs(previous => ({ ...previous, [variable.key]: event.target.value }))}
+                      />
+                    </label>
+                  ))}
+                  <div className="dshp-hint">值只用于本次触发：不会写入运行记录，也不经过模型。</div>
+                </div>
+              )
+            : null}
+
+          {runConfigMode && request.showComment === true
+            ? (
+                <div>
+                  <div className="dshp-label">运行备注（可选）</div>
+                  <input
+                    className="dshp-input"
+                    value={comment}
+                    placeholder="例如：发版 1.2.3"
+                    onChange={event => setComment(event.target.value)}
+                  />
+                </div>
+              )
+            : null}
 
           <div className="dshp-summary">
-            本次将运行
-            {' '}
-            {branches.length}
-            {' '}
-            个分支
-            {branches.length > 0 ? `：${branches.join('、')}` : ''}
+            {[
+              showBranches ? `本次将运行 ${branches.length} 个分支` : '',
+              variables.length > 0 ? `变量覆盖 ${Object.keys(filledEnvs).length} 个` : '',
+            ].filter(Boolean).join(' · ') || '运行配置'}
+            {showBranches && branches.length > 0 ? `：${branches.join('、')}` : ''}
           </div>
           {error ? <div className="dshp-error">{error}</div> : null}
 
           <div className="dshp-footer">
             <button type="button" className="dshp-btn" disabled={busy} onClick={() => { void cancel() }}>取消</button>
-            <button type="button" className="dshp-btn dshp-primary" disabled={busy || branches.length === 0} onClick={() => { void submit() }}>
+            <button type="button" className="dshp-btn dshp-primary" disabled={busy || (showBranches && branches.length === 0)} onClick={() => { void submit() }}>
               {busy ? '提交中…' : '开始运行'}
             </button>
           </div>
@@ -561,6 +642,7 @@ interface ConfigPipeline {
   tier?: string
   confirm?: boolean
   branchMode?: string
+  runConfig?: boolean
   command?: string
   latest?: { runId: string, status: string, startedAt: string, durationMs?: number }
 }
@@ -569,6 +651,7 @@ interface DialogPipeline {
   title?: string
   environment?: string
   confirm?: boolean
+  runConfig?: boolean
   [key: string]: unknown
 }
 
@@ -1149,6 +1232,11 @@ function PipelineConfigSection(): ReactElement {
                     <label className="dshp-check dshp-field-wide" title="生产等敏感流水线建议开启；调用时必须传 confirm:true">
                       <input type="checkbox" checked={dialog.pipeline.confirm === true} onChange={event => field('confirm', event.target.checked)} />
                       <span className="dshp-field-label">需要显式确认才执行（🔒）</span>
+                    </label>
+
+                    <label className="dshp-check dshp-field-wide" title="开启后每次触发前弹「运行配置」：分支 + 运行变量 + 备注；变量留空 = 用云效当前值">
+                      <input type="checkbox" checked={dialog.pipeline.runConfig === true} onChange={event => field('runConfig', event.target.checked)} />
+                      <span className="dshp-field-label">触发前弹运行配置（可修改变量）</span>
                     </label>
                   </div>
                 </div>

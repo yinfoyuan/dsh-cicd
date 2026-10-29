@@ -63,6 +63,16 @@ export class ConfirmRequired extends Error {
 
 const sleep = (ms: number): Promise<void> => new Promise<void>(resolveSleep => setTimeout(resolveSleep, ms))
 
+/** 运行记录里不落 `envs` 的值：变量值可能在会话外被输入，只保留变量名。 */
+function stripSensitiveParams(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (key !== 'envs')
+      out[key] = value
+  }
+  return out
+}
+
 /** 内部 `Runner.wait` 的默认/最大等待预算（秒）；不通过工具暴露。 */
 export const DEFAULT_WAIT_SEC = 180 // 没有历史耗时时的默认值：3 分钟
 export const MAX_WAIT_SEC = 300
@@ -250,6 +260,12 @@ export class Runner {
     if (pipeline.confirm && !confirm)
       throw new ConfirmRequired(pipeline)
 
+    const triggerParams = params ?? {}
+    const envs = (triggerParams as { envs?: unknown }).envs
+    const overriddenVariables = envs && typeof envs === 'object' && !Array.isArray(envs)
+      ? Object.keys(envs as Record<string, unknown>)
+      : []
+
     const record: RunRecord = {
       runId: makeRunId(name),
       pipeline: name,
@@ -257,11 +273,13 @@ export class Runner {
       type: pipeline.type,
       status: 'running',
       startedAt: new Date().toISOString(),
-      params: params ?? {},
+      // 运行记录不落 envs 的值：只保留覆盖的变量名，值只在内存里传给平台。
+      params: stripSensitiveParams(triggerParams),
       projectRoot: project.root,
       serverPid: process.pid,
       ...(pipeline.environment ? { environment: pipeline.environment } : {}),
       ...(pipeline.tier ? { tier: pipeline.tier } : {}),
+      ...(overriddenVariables.length > 0 ? { overriddenVariables } : {}),
     }
     saveRecord(project.runsDir, record)
 
@@ -269,7 +287,7 @@ export class Runner {
       return this.#runShell(project, pipeline, record)
 
     const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
-    const out: TriggerResult = await provider.trigger({ params: record.params })
+    const out: TriggerResult = await provider.trigger({ params: triggerParams })
     Object.assign(record, {
       externalId: out.externalId ?? '',
       url: out.url ?? '',

@@ -1,4 +1,4 @@
-import type { AskBranchesOptions, BranchChoice } from './prompt.js'
+import type { AskBranchesOptions, BranchChoice, RunConfigChoice, RunConfigOptions } from './prompt.js'
 import type { DefineTool, PluginContext, PluginOptions, ToolSpec } from './types.js'
 /**
  * dsh-cicd：每个项目自己的 CI 流水线。
@@ -63,6 +63,9 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
   ctx.effect?.(() => () => branchBroker.dispose())
   const branchDialog = (dialogOptions: AskBranchesOptions): Promise<BranchChoice> =>
     branchBroker.hasClient() ? branchBroker.ask(dialogOptions) : askBranches(ctx, dialogOptions)
+  // 运行配置弹窗：client 不在线时返回 undefined，由 tool-defs 决定回退（分支走 userQuestions，变量用默认值）。
+  const runDialog = (dialogOptions: RunConfigOptions): Promise<RunConfigChoice> | undefined =>
+    branchBroker.hasClient() ? branchBroker.askRunConfig(dialogOptions) : undefined
 
   // 触发后的后台跟踪：阶段变化/结束主动提示，不阻塞对话。
   const watcher = new RunWatcher(runner, {
@@ -82,6 +85,7 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
       options,
       ctx,
       branchDialog,
+      runDialog,
       watch: (project, record, hooks) => watcher.watch(project, record, hooks),
     })
   }

@@ -276,6 +276,21 @@
 - `envs` 只做覆盖写入，不修改云效流水线定义；`cicd.json` 的 `params.envs` 可作固定默认覆盖。
 - shell 流水线没有运行变量；`cicd_vars` 报错并提示只有云效有。
 - 读取失败时错误信息只带状态码/通用原因，**不带响应体**（避免把明文值带进工具输出）。
+- 触发时 `envs` 的值只在内存里传给平台；运行记录不写值，只写 `overriddenVariables` 变量名。
+
+### 5.20 运行配置弹窗（runConfig）
+
+- 流水线配置 `runConfig: true` 时，每次 `cicd_run` 触发前弹「运行配置」：
+  多分支流水线含分支选择，另有运行变量与运行备注。
+- 弹窗由 client 的 `shell.overlay` 提供（复用分支弹窗通道 `/dsh-cicd/branch/*`）；
+  输入的值只用于本次触发：**不经过模型、不写运行记录/日志/通知、不回显**。
+- 变量输入留空 = 不覆盖，使用云效当前值；只提交非空且属于该流水线变量定义的 key。
+- 触发后 `RunRecord.overriddenVariables` 只记录被覆盖的变量名。
+- 模型可按用户意图用 `cicd_run.runConfig` 覆盖配置：`true` 强制弹、`false` 跳过
+  （用户明确表示这次不改运行变量时）；不传则按流水线配置。
+- client 不在线时：多分支回退到 `ctx.userQuestions` 选分支；变量不弹，全部用平台默认值，
+  并在输出里提示「运行配置弹窗不可用」。
+- `preview: true` 只返回分支与变量名（不返回值），不触发。
 
 ## 6. 数据模型
 
@@ -294,6 +309,7 @@
 | `progress` | 云效阶段进度 |
 | `branches` | 云效多分支模式：本次集成的分支列表 |
 | `variables` | 云效运行变量副本（仅 key/描述/标记，不含值） |
+| `overriddenVariables` | 本次显式覆盖的运行变量名（只有 key，值不落盘） |
 | `canceledByUser` | 通过 `cicd_cancel` 取消：仍推终态 toast，但不再唤醒模型 |
 | `checkError` / `checkErrorRetryable` | 最近一次查询错误及是否可重试 |
 | `exitCode` | shell 退出码 |

@@ -61,6 +61,7 @@
 | `branchMode` | string | | 多分支处理方式：`append`（默认）或 `replace` |
 | `reusePrevious` | boolean | | 当用户明确要复用上次运行的分支集合时传 `true`：跳过弹窗，直接用上次集合 |
 | `interactive` | boolean | | 已弃用：默认就是弹窗；`false` 也不会跳过（只有 `reusePrevious:true` 跳过） |
+| `runConfig` | boolean | | 触发前是否弹「运行配置」（分支 + 变量 + 备注）：默认按流水线配置 `runConfig`；用户明确表示这次不改运行变量时传 `false` 跳过，需要强制确认时传 `true` |
 | `preview` | boolean | | 配合弹窗：只选分支并返回，不触发 |
 | `confirm` | boolean | | `confirm: true` 的流水线必须显式传 `true` |
 | `followUp` | boolean | | 当用户诉求超出「触发」时传 `true`：结束后继续处理，或关注运行中的冲突/异常；只触发不传 |
@@ -257,6 +258,17 @@
 - `tags` / `repoBranches` 的 key 是仓库地址；`branches` 仍然是多分支模式的运行分支集合；
 - 值支持字符串/数字/布尔（统一转字符串），嵌套对象/数组会报错；
 - 只支持云效流水线，其他类型传这些参数会直接报错。
+
+### 运行配置弹窗（runConfig）
+
+流水线配置 `runConfig: true` 时，每次触发前会弹「运行配置」：
+
+- 多分支流水线：分支选择（默认全选）+ 运行变量 + 运行备注；
+- 单分支流水线：运行变量 + 运行备注；
+- 变量留空 = 不覆盖，使用云效当前值；只提交非空且属于该流水线变量定义的 key；
+- 值只用于本次触发：**不经过模型、不写运行记录、不回显**；
+- 用户明确表示这次不改运行变量时，模型可传 `runConfig: false` 跳过弹窗；
+- client 不在线时：分支回退到通用提问，变量全部用默认值，输出会提示。
 
 ## 进度提示（可选：客户端 toast / dsh-pet）
 
