@@ -1,7 +1,10 @@
 import type {
+  ApprovalAction,
   EnvMap,
   LogOptions,
   Pipeline,
+  PipelineRunSummary,
+  PipelineVariable,
   PollResult,
   Provider,
   RunRecord,
@@ -25,12 +28,19 @@ import type {
 import process from 'node:process'
 import { TERMINAL } from './state.js'
 
+interface YunxiaoJobAction {
+  type?: string
+  disable?: boolean
+  params?: unknown
+}
+
 interface YunxiaoJob {
   id?: string | number
   name?: string
   jobSign?: string
   status?: string
   result?: string
+  actions?: YunxiaoJobAction[]
 }
 
 interface YunxiaoStage {
@@ -49,8 +59,42 @@ interface YunxiaoRun {
   id?: string | number
 }
 
+interface YunxiaoRunListItem {
+  pipelineRunId?: string | number
+  id?: string | number
+  status?: string
+  startTime?: number
+  endTime?: number
+  triggerMode?: number
+  creatorAccountId?: string
+}
+
+/** 云效时间戳是毫秒；非法/缺失返回空串。 */
+function epochIso(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value))
+    return ''
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? '' : date.toISOString()
+}
+
+/** 云效 triggerMode 的可读标签。 */
+export function triggerModeLabel(mode?: number): string {
+  switch (Number(mode)) {
+    case 1: return '手动'
+    case 2: return '定时'
+    case 3: return '代码提交'
+    case 4: return 'API'
+    case 5: return '流水线'
+    case 6: return 'Webhook'
+    default: return ''
+  }
+}
+
 interface YunxiaoPipelineDetail {
-  pipelineConfig?: { sources?: Array<{ data?: { isBranchMode?: boolean } }> }
+  pipelineConfig?: {
+    sources?: Array<{ data?: { isBranchMode?: boolean } }>
+    settings?: unknown
+  }
   object?: YunxiaoRun
 }
 
@@ -157,8 +201,11 @@ function tokenOf(pipeline: { tokenEnv: string }, env: EnvMap | undefined): strin
 /* ------------------------------- 云效 Flow ------------------------------ */
 const STAGE_DONE = new Set(['SUCCESS', 'SKIP', 'SKIPPED', 'IGNORED'])
 const STAGE_FAIL = new Set(['FAIL', 'FAILED', 'ERROR'])
+/** 阶段/任务在等人工操作（人工卡点等）；云效用 SWITCH_MANUAL 表示「等待手动切换」。 */
+const STAGE_WAITING = new Set(['SWITCH_MANUAL', 'WAITING', 'WAITING_MANUAL', 'MANUAL', 'PAUSED', 'SUSPEND'])
+const JOB_WAITING = new Set(['WAITING', 'PAUSED', 'MANUAL'])
 
-type StageState = 'pending' | 'running' | 'failed' | 'success'
+type StageState = 'pending' | 'running' | 'failed' | 'success' | 'waiting'
 
 /**
  * 从云效 run 详情里抽出「现在跑到哪个阶段」，给等待/状态输出用。
@@ -177,6 +224,8 @@ export function summarizeStages(run: unknown): string {
     let state: StageState = 'pending'
     if (STAGE_FAIL.has(declared) || statuses.some(s => STAGE_FAIL.has(s)))
       state = 'failed'
+    else if (STAGE_WAITING.has(declared) || statuses.some(s => JOB_WAITING.has(s)))
+      state = 'waiting'
     else if (STAGE_DONE.has(declared) || (statuses.length > 0 && statuses.every(s => STAGE_DONE.has(s))))
       state = 'success'
     else if (declared === 'RUNNING' || statuses.some(s => !STAGE_DONE.has(s) && !STAGE_FAIL.has(s)))
@@ -185,10 +234,84 @@ export function summarizeStages(run: unknown): string {
   })
 
   const active = list.find(s => s.state === 'failed')
+    ?? list.find(s => s.state === 'waiting')
     ?? list.find(s => s.state === 'running')
     ?? list[list.length - 1]
-  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始' }
+  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始', waiting: '等待人工确认' }
   return `阶段 ${active.index + 1}/${list.length} · ${active.name}（${label[active.state]}）`
+}
+
+export interface ManualGate {
+  stage: string
+  job: string
+  jobId: string | number
+  /** validate=人工卡点（pass/refuse）；start=手动触发阶段（start）。 */
+  kind: 'validate' | 'start'
+  /** 当前 token 是否有权操作（云效 action.disable=false 才可点）。 */
+  canApprove: boolean
+}
+
+const GATE_ACTION = /PassPipelineValidate|RefusePipelineValidate|RefusePipelineValidator/i
+const START_ACTION = /^ExecutePipelineJobRun$/i
+
+/**
+ * 找人工卡点/手动阶段：
+ * - job 的 `actions[]` 含 PassPipelineValidate → 人工卡点（/pass /refuse）；
+ * - job 的 `actions[]` 含 ExecutePipelineJobRun → 手动触发阶段（/start）；
+ * - 兜底：阶段状态 `SWITCH_MANUAL`。
+ */
+export function findManualGate(run: unknown): ManualGate | null {
+  const detail = run as YunxiaoRun
+  const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
+
+  for (const stage of stages) {
+    for (const job of stage?.stageInfo?.jobs ?? []) {
+      const actions = job.actions ?? []
+      const validate = actions.find(item => GATE_ACTION.test(String(item?.type ?? '')))
+      if (validate && job.id !== undefined) {
+        return {
+          stage: stage?.name ?? '未命名阶段',
+          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
+          jobId: job.id,
+          kind: 'validate',
+          canApprove: validate.disable !== true,
+        }
+      }
+      const start = actions.find(item => START_ACTION.test(String(item?.type ?? '')))
+      if (start && job.id !== undefined) {
+        return {
+          stage: stage?.name ?? '未命名阶段',
+          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
+          jobId: job.id,
+          kind: 'start',
+          canApprove: start.disable !== true,
+        }
+      }
+    }
+  }
+
+  for (const stage of stages) {
+    if (!STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
+      continue
+    const job = (stage?.stageInfo?.jobs ?? []).find(item => item.id !== undefined)
+    return {
+      stage: stage?.name ?? '未命名阶段',
+      job: job?.name ?? job?.jobSign ?? '人工卡点',
+      jobId: job?.id ?? '',
+      kind: 'start',
+      canApprove: true,
+    }
+  }
+  return null
+}
+
+/**
+ * 运行是否在等人工操作（人工卡点/手动切换）：返回等待位置（阶段）。
+ * 没有等待返回空串。
+ */
+export function waitingFor(run: unknown): string {
+  const gate = findManualGate(run)
+  return gate ? `阶段「${gate.stage}」` : ''
 }
 
 /**
@@ -274,21 +397,77 @@ export interface YunxiaoBranchState {
   previous: string[]
 }
 
+export interface YunxiaoPipelineState extends YunxiaoBranchState {
+  /** 运行变量副本（只有 key/描述/标记，值不读取）。 */
+  variables: PipelineVariable[]
+}
+
+function toPipelineVariable(item: unknown): PipelineVariable | null {
+  const entry = item as Record<string, unknown> | null
+  const key = typeof entry?.key === 'string' ? entry.key.trim() : ''
+  if (!key)
+    return null
+  const variable: PipelineVariable = { key }
+  if (typeof entry?.description === 'string' && entry.description)
+    variable.description = entry.description
+  if (entry?.runningConfig === true)
+    variable.runningConfig = true
+  if (entry?.encrypted === true)
+    variable.encrypted = true
+  if (entry?.masked === true)
+    variable.masked = true
+  return variable
+}
+
 /**
- * 读取云效流水线的分支模式状态：是否多分支 + 上次集成的分支。
- * 交互式选择分支（`cicd_run interactive`）和触发时的 merge 都用它。
+ * 只要运行变量定义：不读 `value`（可能是明文密钥），只保留 key/描述/加密标记。
+ * 字段来自流水线详情 `pipelineConfig.settings.globalParams[]`。
+ */
+export function parsePipelineVariables(settings: unknown): PipelineVariable[] {
+  let value: unknown = settings
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value)
+    }
+    catch {
+      return []
+    }
+  }
+  const list = (value as { globalParams?: unknown } | undefined)?.globalParams
+  if (!Array.isArray(list))
+    return []
+  return list
+    .map(toPipelineVariable)
+    .filter((item): item is PipelineVariable => item !== null)
+}
+
+function detailPath(pipeline: YunxiaoPipeline): string {
+  const orgPath = pipeline.organizationId ? `/organizations/${pipeline.organizationId}` : ''
+  return `/oapi/v1/flow${orgPath}/pipelines/${pipeline.pipelineId}`
+}
+
+/** 只读流水线详情里的运行变量；失败抛错，由调用方决定是否 best-effort。 */
+async function readPipelineVariables(pipeline: YunxiaoPipeline, env: EnvMap): Promise<PipelineVariable[]> {
+  const headers = { 'x-yunxiao-token': tokenOf(pipeline, env), 'content-type': 'application/json' }
+  const { data } = await fetchJson(`${pipeline.baseUrl}${detailPath(pipeline)}`, { headers })
+  return parsePipelineVariables((data as YunxiaoPipelineDetail)?.pipelineConfig?.settings)
+}
+
+/**
+ * 读取云效流水线的分支模式 + 运行变量定义。
+ * 交互式选择分支（`cicd_run interactive`）、触发时的 merge 和变量副本都用它。
  */
 // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
-export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoBranchState> {
+export async function getYunxiaoPipelineState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoPipelineState> {
   const base = pipeline.baseUrl
-  const orgPath = pipeline.organizationId ? `/organizations/${pipeline.organizationId}` : ''
-  const basePath = `/oapi/v1/flow${orgPath}/pipelines/${pipeline.pipelineId}`
+  const basePath = detailPath(pipeline)
   const headers = { 'x-yunxiao-token': tokenOf(pipeline, env), 'content-type': 'application/json' }
 
   const { data } = await fetchJson(`${base}${basePath}`, { headers })
   const detail = data as YunxiaoPipelineDetail
   const sources = Array.isArray(detail?.pipelineConfig?.sources) ? detail.pipelineConfig.sources : []
   const isBranchMode = sources.some(source => source?.data?.isBranchMode === true)
+  const variables = parsePipelineVariables(detail?.pipelineConfig?.settings)
 
   let previous: string[] = []
   if (isBranchMode) {
@@ -313,8 +492,8 @@ export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvM
           if (!id)
             continue
           try {
-            const detail = await fetchJson(`${base}${basePath}/runs/${id}`, { headers })
-            const branches = readPrevious(runOf(detail.data))
+            const detail2 = await fetchJson(`${base}${basePath}/runs/${id}`, { headers })
+            const branches = readPrevious(runOf(detail2.data))
             if (branches.length > 0) {
               previous = branches
               break
@@ -326,12 +505,20 @@ export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvM
       catch {}
     }
   }
+  return { isBranchMode, previous, variables }
+}
+
+/** 兼容旧调用点：只要分支状态（不含变量）。 */
+export async function getYunxiaoBranchState(pipeline: YunxiaoPipeline, env: EnvMap): Promise<YunxiaoBranchState> {
+  const { isBranchMode, previous } = await getYunxiaoPipelineState(pipeline, env)
   return { isBranchMode, previous }
 }
 
 /**
  * 云效 OpenAPI（新版 /oapi/v1/flow）：
  * - 触发 POST .../runs，body 里的 params 是「JSON 字符串」；响应是**裸整数** runId
+ *   params 支持 branchModeBranchs / envs / runningBranchs / runningTags /
+ *   running*Artifacts / comment（见 CreatePipelineRun 文档）
  * - 状态 GET .../runs/{runId}，status ∈ RUNNING / SUCCESS / FAIL
  * - 日志 GET .../runs/{runId}/job/{jobId}/log，jobId 从 stages[].stageInfo.jobs[].id 取
  * - 取消 PUT .../runs/{runId}（注意是 PUT），返回裸布尔
@@ -360,6 +547,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
       const { branches: branchesRaw, branch: branchRaw, branchMode: branchModeRaw, ...rest } = merged
       let payload: Record<string, unknown> = merged
       let branches: string[] = []
+      let variables: PipelineVariable[] = []
       let modeNote = ''
 
       if (pipeline.branchMode !== 'off') {
@@ -367,10 +555,11 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         const mode: 'append' | 'replace'
           = String(branchModeRaw ?? pipeline.branchMode ?? 'append').toLowerCase() === 'replace' ? 'replace' : 'append'
 
-        let state: YunxiaoBranchState | null = null
+        let state: YunxiaoPipelineState | null = null
         let detectError = ''
         try {
-          state = await getYunxiaoBranchState(pipeline, env)
+          state = await getYunxiaoPipelineState(pipeline, env)
+          variables = state.variables
         }
         catch (error) {
           detectError = (error as Error).message
@@ -394,6 +583,14 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         else if (requested.length > 0) {
           throw new Error('这条云效流水线不是多分支模式，branches / branch 参数不适用')
         }
+      }
+
+      // branchMode: off 时不会走上面的详情请求；单独读一次变量定义，失败就忽略。
+      if (pipeline.branchMode === 'off') {
+        try {
+          variables = await readPipelineVariables(pipeline, env)
+        }
+        catch {}
       }
 
       // 官方要求：唯一顶层字段 params，且值是 JSON 字符串（不是对象）。
@@ -424,6 +621,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
           `云效 Flow run ${runId}（页面：https://devops.aliyun.com/flow/pipeline/${pipeline.pipelineId}）`,
         ].filter(Boolean).join('；'),
         branches: branches.length > 0 ? branches : undefined,
+        variables: variables.length > 0 ? variables : undefined,
       }
     },
     async poll(record: RunRecord): Promise<PollResult> {
@@ -437,6 +635,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         rawStatus: obj?.status,
         note: pendingConflict(obj) || obj?.statusText,
         progress: summarizeStages(obj),
+        waiting: waitingFor(obj) || undefined,
         branches: parseSourceBranches(obj?.globalParams),
       }
     },
@@ -495,6 +694,74 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         }
       }
       return chunks.join('\n\n')
+    },
+    /** 只读：运行变量定义（不含值）。 */
+    async variables(): Promise<PipelineVariable[]> {
+      try {
+        return await readPipelineVariables(pipeline, env)
+      }
+      catch (error) {
+        // 错误信息不带响应体：详情响应里可能有明文变量值，不能回显到工具输出。
+        const status = (error as { httpStatus?: number }).httpStatus
+        throw new Error(`读取云效运行变量失败${status ? `（HTTP ${status}）` : ''}：请检查 token / 权限 / 组织与流水线 ID`)
+      }
+    },
+    /** 只读：平台侧最近运行（不含变量值/日志）。 */
+    async runs(limit: number): Promise<PipelineRunSummary[]> {
+      const perPage = Math.min(Math.max(Math.trunc(limit) || 10, 1), 30)
+      const { data } = await fetchJson(`${base}${basePath}/runs?page=1&perPage=${perPage}`, { headers: headers() })
+      const list: YunxiaoRunListItem[] = Array.isArray(data)
+        ? data as YunxiaoRunListItem[]
+        : (data as { object?: YunxiaoRunListItem[] }).object ?? []
+      return list
+        .map((item): PipelineRunSummary => ({
+          externalId: String(item.pipelineRunId ?? item.id ?? ''),
+          status: normalizeStatus(item.status),
+          ...(item.status ? { rawStatus: String(item.status) } : {}),
+          startedAt: epochIso(item.startTime),
+          ...(item.endTime ? { finishedAt: epochIso(item.endTime) } : {}),
+          ...(typeof item.startTime === 'number' && typeof item.endTime === 'number' && item.endTime >= item.startTime
+            ? { durationMs: item.endTime - item.startTime }
+            : {}),
+          ...(typeof item.triggerMode === 'number' ? { triggerMode: item.triggerMode } : {}),
+          ...(item.creatorAccountId ? { creatorAccountId: String(item.creatorAccountId) } : {}),
+        }))
+        .filter(item => item.externalId)
+    },
+    /** 写操作：通过/拒绝人工卡点；手动阶段的拒绝等价于取消运行（云效无拒绝接口）。 */
+    // eslint-disable-next-line sonarjs/cognitive-complexity -- 卡点/手动阶段/取消三类分支集中在一处，拆开反而分散
+    async approve(record: RunRecord, action: ApprovalAction): Promise<{ note?: string, canceled?: boolean }> {
+      const { data } = await fetchJson(`${base}${runUrl(record.externalId ?? '')}`, { headers: headers() })
+      const gate = findManualGate(runOf(data))
+      if (!gate)
+        throw new Error('这次运行现在没有等待人工确认的卡点（可能已经处理，或不需要审批）')
+      if (gate.jobId === '' || gate.jobId === undefined)
+        throw new Error('找到了人工卡点阶段，但没有可用的 jobId，无法审批（请到云效页面操作）')
+      if (!gate.canApprove)
+        throw new Error('当前访问令牌没有该人工卡点/手动阶段的操作权限（云效 action.disable=true）')
+      if (gate.kind === 'start' && action === 'refuse') {
+        const { text: cancelText } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {
+          method: 'PUT',
+          headers: headers(),
+        })
+        const canceledRaw = cancelText.trim()
+        if (canceledRaw !== 'true' && canceledRaw !== '1')
+          throw new Error(`云效没有确认取消成功：${canceledRaw.slice(0, 120)}`)
+        return { note: `已拒绝手动阶段并取消运行：阶段「${gate.stage}」`, canceled: true }
+      }
+      const verb = gate.kind === 'start' ? 'start' : (action === 'pass' ? 'pass' : 'refuse')
+      const { text } = await fetchText(`${base}${basePath}/pipelineRuns/${record.externalId}/jobs/${gate.jobId}/${verb}`, {
+        method: 'POST',
+        headers: headers(),
+      })
+      const raw = text.trim()
+      if (raw !== 'true' && raw !== '1')
+        throw new Error(`云效没有确认操作成功：${raw.slice(0, 120)}`)
+      return {
+        note: gate.kind === 'start'
+          ? `已开始手动阶段：阶段「${gate.stage}」任务「${gate.job}」`
+          : `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点：阶段「${gate.stage}」任务「${gate.job}」`,
+      }
     },
     async cancel(record: RunRecord): Promise<{ note?: string }> {
       const { text } = await fetchText(`${base}${runUrl(record.externalId ?? '')}`, {

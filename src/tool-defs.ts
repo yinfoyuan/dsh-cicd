@@ -1,4 +1,4 @@
-import type { AskBranchesOptions, BranchChoice } from './prompt.js'
+import type { AskBranchesOptions, BranchChoice, RunConfigChoice, RunConfigOptions } from './prompt.js'
 import type { YunxiaoBranchState } from './providers.js'
 import type { Runner } from './runner.js'
 import type {
@@ -13,7 +13,7 @@ import type {
   WatchHooks,
 } from './types.js'
 /**
- * 六个模型工具的声明与执行体。
+ * 七个模型工具的声明与执行体。
  *
  * 单独放一个模块（而不是塞进 index.ts）的原因：这里不 import
  * `@deepseek-ai/dsh-tools`，测试可以传一个假的 defineTool 进来，
@@ -22,12 +22,13 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { ConfigError } from './config.js'
-import { conflictWakeText, environmentLabel, followUpText, ICON, pipelineSummaryLine, recordText } from './format.js'
+import { conflictWakeText, environmentLabel, fmtTime, followUpText, ICON, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
 import { resolveProject } from './project.js'
 import { askBranches, describeChoice } from './prompt.js'
-import { getYunxiaoBranchState } from './providers.js'
+import { getYunxiaoBranchState, triggerModeLabel } from './providers.js'
 import {
   ConfirmRequired,
+  durationText,
   PipelineError,
 
 } from './runner.js'
@@ -79,6 +80,63 @@ function missingConfigText(projectRoot: string): string {
   ].join('\n')
 }
 
+/**
+ * 云效运行参数：把工具入参映射成 `CreatePipelineRun` 的 `params` key。
+ * 形状见官方文档：`params` 是 JSON 字符串，支持
+ * `branchModeBranchs / envs / runningBranchs / runningTags / running*Artifacts / comment`。
+ *
+ * 只做「整体覆盖」：`envs`、`tags`、`artifacts` 都是整对象替换，不做深合并。
+ */
+const ARTIFACT_KEYS = {
+  pipeline: 'runningPipelineArtifacts',
+  acr: 'runningAcrArtifacts',
+  packages: 'runningPackagesArtifacts',
+} as const
+
+/** 平台要的是 `{ key: "value" }`：值统一转字符串，嵌套对象直接报错。 */
+function stringMap(value: unknown, field: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error(`${field} 必须是对象，例如 { "key": "value" }`)
+  const out: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value)) {
+    if (item === null || typeof item === 'object')
+      throw new Error(`${field}.${key} 必须是字符串、数字或布尔值`)
+    out[key] = String(item)
+  }
+  return out
+}
+
+function artifactsParams(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('artifacts 必须是对象，例如 { "pipeline": { "<pipelineId>": "12" } }')
+  const out: Record<string, unknown> = {}
+  for (const [kind, item] of Object.entries(value)) {
+    if (!(kind in ARTIFACT_KEYS))
+      throw new Error(`artifacts 只支持 pipeline / acr / packages，收到了「${kind}」`)
+    if (item !== undefined)
+      out[ARTIFACT_KEYS[kind as keyof typeof ARTIFACT_KEYS]] = stringMap(item, `artifacts.${kind}`)
+  }
+  return out
+}
+
+function yunxiaoRunParams(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  if (args.comment !== undefined) {
+    if (typeof args.comment !== 'string')
+      throw new Error('comment 必须是字符串（运行备注）')
+    out.comment = args.comment
+  }
+  if (args.envs !== undefined)
+    out.envs = stringMap(args.envs, 'envs')
+  if (args.tags !== undefined)
+    out.runningTags = stringMap(args.tags, 'tags')
+  if (args.repoBranches !== undefined)
+    out.runningBranchs = stringMap(args.repoBranches, 'repoBranches')
+  if (args.artifacts !== undefined)
+    Object.assign(out, artifactsParams(args.artifacts))
+  return out
+}
+
 export interface BuildToolDeps {
   defineTool: DefineTool
   runner: Runner
@@ -89,11 +147,15 @@ export interface BuildToolDeps {
   branchState?: (pipeline: Pipeline, env: Record<string, string | undefined>) => Promise<YunxiaoBranchState>
   /** 交互式选择分支；默认走 ctx.userQuestions，测试或自定义 client 可注入。 */
   branchDialog?: (options: AskBranchesOptions) => Promise<BranchChoice>
+  /** 「运行配置」弹窗（分支 + 变量 + 备注）；client 不在线时返回 undefined，由工具决定回退。 */
+  runDialog?: (options: RunConfigOptions) => Promise<RunConfigChoice> | undefined
   /** 触发后开始后台跟踪（阶段变化/结束主动提示），不阻塞对话。 */
   watch?: (project: Project, record: RunRecord, hooks?: WatchHooks) => void
+  /** 用户取消后抑制在途的「等待人工确认」提醒；测试可不传。 */
+  muteWaiting?: (runId: string) => void
 }
 
-export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, watch }: BuildToolDeps): ToolSpec[] {
+export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, runDialog, watch, muteWaiting }: BuildToolDeps): ToolSpec[] {
   const tools: ToolSpec[] = []
 
   tools.push(defineTool({
@@ -134,15 +196,99 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
   }))
 
   tools.push(defineTool({
+    name: 'cicd_runs',
+    description: '只读：列出云效侧最近若干次运行（状态、开始时间、耗时、触发方式），不含日志和变量值。用户问「云效上最近跑过什么」「上周那次部署」或 DSH 重启/别人触发导致本地查不到时用它；具体某次运行用 cicd_status 查。',
+    parameters: {
+      pipeline: { type: 'string', description: '流水线名称；当前项目只有一条云效流水线时可省略' },
+      limit: { type: 'number', description: '最多返回几条（1-30，默认 10）' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => true,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        const runs = await runner.runs(project, {
+          ...(typeof args.pipeline === 'string' ? { pipeline: args.pipeline } : {}),
+          ...(typeof args.limit === 'number' ? { limit: args.limit } : {}),
+        })
+        if (runs.length === 0)
+          return { text: '云效侧没有查到运行记录。' }
+        const lines = runs.map((item) => {
+          const trigger = triggerModeLabel(item.triggerMode)
+          const started = item.startedAt ? fmtTime(item.startedAt) : ''
+          const duration = item.durationMs ? `（${durationText(item.durationMs)}）` : ''
+          return `${ICON[item.status] ?? '•'} #${item.externalId} ${item.status}${trigger ? ` · ${trigger}` : ''}${started ? ` · ${started}` : ''}${duration}`
+        })
+        return {
+          text: [
+            `云效最近运行（只读，${runs.length} 条）：`,
+            ...lines,
+            '',
+            '这是平台侧历史，不依赖本地 .dsh/cicd-runs；查某次状态用 cicd_status。',
+            '注意：云效列表里「用户取消」也会显示 FAIL，要区分取消/失败请看 cicd_status 的详情。',
+          ].join('\n'),
+        }
+      }
+      catch (error) {
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'cicd_vars',
+    description: '只读：列出云效流水线的运行变量（名称/描述/是否加密），**不读取变量值**。触发前用它确认有哪些变量可以覆盖；覆盖值用 cicd_run 的 envs 传，没传的用平台默认值。shell 流水线没有运行变量。',
+    parameters: {
+      pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 30_000,
+    isConcurrencySafe: () => true,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        const name = String(args.pipeline ?? '')
+        const variables = await runner.variables(project, { pipeline: name })
+        if (variables.length === 0)
+          return { text: `流水线「${name}」没有运行变量（平台未返回变量定义，或这不是云效流水线）。` }
+
+        const lines = variables.map((item) => {
+          const secret = item.encrypted || item.masked ? '（已配置，值不可读）' : ''
+          const desc = item.description ? `：${item.description}` : ''
+          return `- ${item.key}${secret}${desc}`
+        })
+        return {
+          text: [
+            `流水线「${name}」的运行变量（只读，值不会读取）：${variables.length} 个`,
+            ...lines,
+            '',
+            '覆盖某个变量：cicd_run { "pipeline": "...", "envs": { "<key>": "<value>" } }；没传的用平台默认值。',
+          ].join('\n'),
+        }
+      }
+      catch (error) {
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
     name: 'cicd_run',
-    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突/异常，传 followUp:true，终态或检测到冲突时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
+    description: '触发当前项目配置的一条流水线，立即返回 runId（异步，不阻塞）。**触发后本轮任务就结束了**：直接回复用户已触发，阶段变化/结束由后台 toast 通知；不要用 Start-Sleep / 循环 cicd_status 等方式等待结果。如果用户的诉求不只是「触发」，而是要在运行结束后继续处理（如部署、分析失败、汇报结果），或要关注运行中的合并冲突、等待人工确认、异常，传 followUp:true，终态或检测到冲突/人工确认暂停时会自动唤醒你继续。云效多分支模式：**默认一定弹窗确认分支**；只有显式传 branches，或用户明确要求复用上次运行的分支集合时才传 reusePrevious:true 跳过弹窗。interactive:false 不再跳过（兼容旧参数，等价默认弹窗）。云效运行参数：comment（运行备注）、envs（运行变量）、tags（按仓库地址的运行 tag）、repoBranches（按仓库地址的运行分支）、artifacts（流水线/ACR/制品包版本），与 params 合并、命名参数优先。用户话里指定了某个运行变量的值时用 envs，不要写进 comment。只想知道有哪些运行变量（不读取值）时用 cicd_vars；覆盖时用 envs，没传的用平台默认值。配置了 runConfig 的流水线每次触发前会弹「运行配置」（分支 + 变量 + 备注），空着 = 用云效默认值；用户话里如果有版本、环境、目的、变更说明、工单号这类上下文，主动提取成 comment 传进来，不要等用户专门提备注；用户明确表示这次不改运行变量时传 runConfig:false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）。标记 🔒 的流水线会真的执行，必须先征得用户明确同意，再带 confirm:true 调用。',
     parameters: {
       pipeline: { type: 'string', required: true, description: '流水线名称（先用 cicd_list 查看）' },
       params: { type: 'json', description: '传给平台的参数（分支、环境等），可省略' },
-      branches: { type: 'json', description: '云效多分支模式：本次要新增/替换的运行分支列表，如 ["feature/login"]；显式传了才会跳过弹窗' },
+      comment: { type: 'string', description: '云效运行备注。只放版本、环境、目的、变更说明、工单号这类备注性上下文；变量赋值不要写进这里，用 envs。弹窗会预填' },
+      envs: { type: 'json', description: '云效运行变量覆盖。用户指定某个运行变量的值时用这个，不要写进 comment；值支持字符串/数字/布尔。运行配置弹窗会预填' },
+      tags: { type: 'json', description: '云效按仓库地址指定的运行 tag，如 { "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }' },
+      repoBranches: { type: 'json', description: '云效按仓库地址指定的运行分支（runningBranchs）；多分支模式的集合用 branches，不要用它' },
+      artifacts: { type: 'json', description: '云效制品版本：{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }' },
+      branches: { type: 'json', description: '云效多分支模式：本次要新增/替换的运行分支列表，如 ["feature/login"]；只在用户明确给出分支或要求替换时传。开启 runConfig 的流水线里它只是弹窗预选，不会跳过确认' },
       branchMode: { type: 'string', description: '多分支模式处理方式：append（默认，上次 + 本次）或 replace（只用本次）' },
       reusePrevious: { type: 'boolean', description: '当用户明确要求复用上次运行的分支集合（不是本次重新挑选）时传 true：跳过弹窗，直接用上次确认的集合（replace）' },
       interactive: { type: 'boolean', description: '已弃用：默认就是弹窗；传 false 也不会跳过（只有 reusePrevious:true 才跳过）' },
+      runConfig: { type: 'boolean', description: '触发前是否弹「运行配置」弹窗（分支 + 运行变量 + 备注）：默认按流水线配置 runConfig；用户明确表示这次不改运行变量时传 false，只跳过变量/备注，分支确认仍会弹（除非 reusePrevious）；需要强制确认时传 true' },
       preview: { type: 'boolean', description: '配合弹窗：只选择分支并返回结果，不真正触发' },
       confirm: { type: 'boolean', description: '对标记 confirm:true 的流水线，在用户确认后传 true' },
       followUp: { type: 'boolean', description: '当用户的诉求超出「触发」时传 true：包括运行结束后继续处理（部署/回滚/分析失败/汇报）或关注运行中的合并冲突、异常。只触发、没有后续诉求时不要传，也不要为了等结果传' },
@@ -172,6 +318,27 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           && pipeline?.type === 'yunxiao'
           && pipeline?.branchMode !== 'off'
 
+        // 云效一等运行参数：与 params 合并，命名参数优先（整体覆盖，不做深合并）。
+        const yunxiaoParams = yunxiaoRunParams(args)
+        if (Object.keys(yunxiaoParams).length > 0) {
+          if (!pipeline || pipeline.type !== 'yunxiao')
+            throw new Error('comment / envs / tags / repoBranches / artifacts 只支持云效（yunxiao）流水线')
+          Object.assign(params, yunxiaoParams)
+        }
+
+        const runConfigArg = args.runConfig
+        if (runConfigArg !== undefined && typeof runConfigArg !== 'boolean')
+          throw new Error('runConfig 必须是 boolean')
+        if (runConfigArg === true && (!pipeline || pipeline.type !== 'yunxiao'))
+          throw new Error('runConfig 只支持云效（yunxiao）流水线')
+
+        // 配置开启（或强制 true）时每次触发都确认；runConfig:false 只跳过变量/备注，
+        // 分支确认仍然要弹（除非 reusePrevious 明确复用）。
+        const runConfigConfigured = pipeline?.type === 'yunxiao'
+          && (runConfigArg === true || pipeline.runConfig === true)
+        const skipVariables = runConfigArg === false
+        let runConfigWarning = ''
+
         if (reuse) {
           if (!pipeline || pipeline.type !== 'yunxiao') {
             throw new Error('reusePrevious 只支持云效（yunxiao）多分支流水线')
@@ -190,7 +357,114 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           params.branches = previous
           params.branchMode = 'replace'
         }
-        else if (explicit || auto) {
+
+        if (runConfigConfigured && pipeline) {
+          try {
+            const variables = skipVariables ? [] : await runner.variables(project, { pipeline: pipelineName })
+            let state: YunxiaoBranchState | null = null
+            if (!reuse && pipeline.branchMode !== 'off')
+              state = await (branchState ?? getYunxiaoBranchState)(pipeline, project.env)
+
+            const showBranches = !reuse && state?.isBranchMode === true
+            const saved = readBranchSelection(project.root, pipeline.name)
+            const candidates = [...new Set([...(state?.previous ?? []), ...(saved?.selected ?? [])])]
+            const selected = candidates.filter(branch => !(saved?.removed ?? []).includes(branch))
+            // 开了 runConfig 的流水线：显式 branches 只做弹窗预选，不再跳过确认。
+            const branchInput = args.branches !== undefined ? args.branches : params.branches
+            const requested = Array.isArray(branchInput)
+              ? branchInput.map(branch => String(branch).trim()).filter(Boolean)
+              : typeof branchInput === 'string' ? [branchInput.trim()].filter(Boolean) : []
+            const previous = [...new Set(requested.length > 0 ? requested : selected)]
+
+            const needDialog = showBranches || !skipVariables
+            const initialComment = typeof args.comment === 'string'
+              ? args.comment.trim()
+              : typeof params.comment === 'string' ? params.comment.trim() : ''
+            const rawEnvs = params.envs
+            const initialEnvs = rawEnvs && typeof rawEnvs === 'object' && !Array.isArray(rawEnvs)
+              ? Object.fromEntries(Object.entries(rawEnvs as Record<string, unknown>).map(([key, value]) => [key, String(value)]))
+              : {}
+            const dialogOptions: RunConfigOptions = {
+              title: pipeline.title || pipeline.name,
+              previous,
+              showBranches,
+              variables,
+              showComment: !skipVariables,
+              ...(initialComment ? { comment: initialComment } : {}),
+              ...(Object.keys(initialEnvs).length > 0 ? { envs: initialEnvs } : {}),
+              ...(pipeline.environment ? { environment: pipeline.environment } : {}),
+              ...(pipeline.tier ? { tier: pipeline.tier } : {}),
+              agent: exec?.agent,
+              signal: exec?.signal,
+            }
+
+            let choice: RunConfigChoice = { envs: {} }
+            let usedClientDialog = false
+            if (needDialog) {
+              const pending = runDialog?.(dialogOptions)
+              if (pending) {
+                usedClientDialog = true
+                choice = await pending
+              }
+              else {
+                // client 未加载：分支回退到通用提问；变量不弹，全部用云效默认值。
+                const branches = showBranches
+                  ? await (branchDialog ?? ((opts: AskBranchesOptions) => askBranches(ctx!, opts)))(dialogOptions)
+                  : undefined
+                choice = { ...(branches ? { branches } : {}), envs: {} }
+                if (!skipVariables)
+                  runConfigWarning = '运行配置弹窗不可用（client 未加载）：本次未修改变量，使用云效默认值'
+              }
+            }
+
+            if (choice.branches) {
+              const finalBranches = choice.branches.branches
+              params.branches = finalBranches
+              params.branchMode = 'replace'
+              // 和独立分支弹窗一致：记住选中/移除，下次默认 = 云效分支 ∪ 选中 − 移除。
+              const removedNow = previous.filter(branch => !finalBranches.includes(branch))
+              const removed = [...new Set([...(saved?.removed ?? []), ...removedNow])]
+                .filter(branch => !finalBranches.includes(branch))
+              saveBranchSelection(project.root, pipeline.name, finalBranches, removed)
+            }
+            if (Object.keys(choice.envs).length > 0)
+              params.envs = choice.envs
+            else if (usedClientDialog && !skipVariables)
+              delete params.envs
+            if (choice.comment !== undefined) {
+              if (choice.comment)
+                params.comment = choice.comment
+              else
+                delete params.comment
+            }
+
+            if (args.preview === true) {
+              return {
+                text: [
+                  `已确认运行配置：${pipeline.title || pipeline.name}`,
+                  choice.branches ? `分支：${choice.branches.branches.join('、')}` : '',
+                  Object.keys(choice.envs).length > 0
+                    ? `变量覆盖：${Object.keys(choice.envs).join('、')}（值不回显）`
+                    : '变量覆盖：无（使用云效当前值）',
+                  choice.comment ? `备注：${choice.comment}` : '',
+                  runConfigWarning ? `⚠️ ${runConfigWarning}` : '',
+                  '',
+                  'preview 模式：没有触发运行。去掉 preview 再调用一次即可真正执行。',
+                ].filter(Boolean).join('\n'),
+              }
+            }
+          }
+          catch (error) {
+            const message = (error as Error)?.message ?? String(error)
+            if (/取消/.test(message))
+              throw error
+            throw new PipelineError(
+              `运行配置未完成，已取消触发：${message}`,
+              '请重试；或直接用 envs / branches 参数指定本次覆盖',
+            )
+          }
+        }
+        else if (!reuse && (explicit || auto)) {
           if (!pipeline) {
             throw new PipelineError(
               `没有名为「${pipelineName}」的流水线。已配置：${Object.keys(project.config.pipelines).join('、')}`,
@@ -286,6 +560,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           ? {
               onTerminal: (final, hint) => wake(followUpText(final, hint)),
               onConflict: final => wake(conflictWakeText(final)),
+              onWaiting: final => wake(waitingWakeText(final)),
             }
           : undefined
         watch?.(project, record, hooks)
@@ -299,10 +574,16 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
             record.branches?.length ? `branches: ${record.branches.join('、')}` : '',
             record.url ? `url:    ${record.url}` : '',
             record.note ? `note:   ${record.note}` : '',
+            record.overriddenVariables?.length
+              ? `变量覆盖：${record.overriddenVariables.join('、')}（只显示名称，值不回显）`
+              : record.variables?.length
+                ? `运行变量：${record.variables.length} 个（未覆盖，使用平台默认值；查看用 cicd_vars）`
+                : '',
+            runConfigWarning ? `⚠️ ${runConfigWarning}` : '',
             '',
             `✅ 触发完成，本轮到此结束。`,
             canFollowUp
-              ? `用户要求继续跟进这次运行：终态或检测到合并冲突时会自动唤醒你，现在直接回复用户已触发、你会继续跟进，并结束本轮。`
+              ? `用户要求继续跟进这次运行：终态、检测到合并冲突或等待人工确认时会自动唤醒你，现在直接回复用户已触发、你会继续跟进，并结束本轮。`
               : followUpRequested
                 ? `⚠️ 当前 DSH 不支持自动唤醒；结束后请让用户再问，或用户自己用 cicd_status 查看。`
                 : `请直接回复用户：已触发 ${record.pipeline}（runId: ${record.runId}），后台跟踪中，阶段变化/结束会通知。`,
@@ -327,7 +608,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_status',
-    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
+    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态；在等人工确认（例如人工卡点）时输出会带 waiting。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
     parameters: {
       runId: { type: 'string', description: 'cicd_run 返回的运行 id' },
       pipeline: { type: 'string', description: '不传 runId 时，用流水线名查最近一次' },
@@ -340,6 +621,44 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
         const project = resolveProject(exec, options)
         const record = await runner.status(project, { ...(typeof args.runId === 'string' ? { runId: args.runId } : {}), ...(typeof args.pipeline === 'string' ? { pipeline: args.pipeline } : {}) })
         return { text: recordText(record) }
+      }
+      catch (error) {
+        throw new Error(errorText(error))
+      }
+    },
+  }))
+
+  tools.push(defineTool({
+    name: 'cicd_approve',
+    description: '对正在等待人工确认的云效运行执行操作：人工卡点用 pass/refuse；手动触发阶段 pass 走 /start 开始，refuse 等价取消整个运行。只在运行确实处于等待人工确认时使用；必须先向用户复述要操作的环境、阶段和动作并得到明确同意，再传 confirm:true。插件不会自动决定。',
+    parameters: {
+      runId: { type: 'string', required: true, description: '运行 id' },
+      action: { type: 'string', required: true, description: 'pass（通过/开始）或 refuse（拒绝；手动阶段等价取消运行）' },
+      confirm: { type: 'boolean', description: '必须传 true：表示已获得用户明确同意' },
+    },
+    output: TEXT_OUTPUT,
+    timeoutMs: 60_000,
+    isConcurrencySafe: () => false,
+    async execute(args: Record<string, unknown>, exec: ToolRunContext) {
+      try {
+        const project = resolveProject(exec, options)
+        if (args.confirm !== true)
+          throw new PipelineError('人工卡点审批必须由用户明确同意（confirm: true）。', '先把环境、阶段和动作告诉用户，得到同意后再调用。')
+        const action = String(args.action ?? '')
+        if (action !== 'pass' && action !== 'refuse')
+          throw new PipelineError('action 只能是 pass 或 refuse。')
+        const { record, note } = await runner.approve(project, {
+          runId: typeof args.runId === 'string' ? args.runId : undefined,
+          action,
+          confirm: true,
+        })
+        return {
+          text: [
+            note || `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点`,
+            '',
+            recordText(record),
+          ].join('\n'),
+        }
       }
       catch (error) {
         throw new Error(errorText(error))
@@ -439,6 +758,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
       try {
         const project = resolveProject(exec, options)
         const record = await runner.cancel(project, { runId: typeof args.runId === 'string' ? args.runId : undefined })
+        muteWaiting?.(record.runId)
         return { text: recordText(record) }
       }
       catch (error) {

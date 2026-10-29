@@ -2,8 +2,11 @@ import type { ChildProcess } from 'node:child_process'
 import type { WriteStream } from 'node:fs'
 import type { ConflictInfo } from './conflict.js'
 import type {
+  ApprovalAction,
   LogOptions,
   Pipeline,
+  PipelineRunSummary,
+  PipelineVariable,
   PluginContext,
   PollResult,
   Project,
@@ -61,6 +64,16 @@ export class ConfirmRequired extends Error {
 }
 
 const sleep = (ms: number): Promise<void> => new Promise<void>(resolveSleep => setTimeout(resolveSleep, ms))
+
+/** 运行记录里不落 `envs` 的值：变量值可能在会话外被输入，只保留变量名。 */
+function stripSensitiveParams(params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(params)) {
+    if (key !== 'envs')
+      out[key] = value
+  }
+  return out
+}
 
 /** 内部 `Runner.wait` 的默认/最大等待预算（秒）；不通过工具暴露。 */
 export const DEFAULT_WAIT_SEC = 180 // 没有历史耗时时的默认值：3 分钟
@@ -170,6 +183,8 @@ export class Runner {
   children: Map<string, ShellMeta> = new Map()
   /** 同一个 runId 的并发 wait 共用一次轮询，避免重复打接口。 */
   waiting: Map<string, Promise<WaitResult>> = new Map()
+  /** 本进程内用户主动取消过的 runId：后台轮询不得把它覆盖回 running/无标记。 */
+  #userCanceled = new Set<string>()
   #ctx?: PluginContext
 
   constructor(ctx?: PluginContext) {
@@ -249,6 +264,12 @@ export class Runner {
     if (pipeline.confirm && !confirm)
       throw new ConfirmRequired(pipeline)
 
+    const triggerParams = params ?? {}
+    const envs = (triggerParams as { envs?: unknown }).envs
+    const overriddenVariables = envs && typeof envs === 'object' && !Array.isArray(envs)
+      ? Object.keys(envs as Record<string, unknown>)
+      : []
+
     const record: RunRecord = {
       runId: makeRunId(name),
       pipeline: name,
@@ -256,11 +277,13 @@ export class Runner {
       type: pipeline.type,
       status: 'running',
       startedAt: new Date().toISOString(),
-      params: params ?? {},
+      // 运行记录不落 envs 的值：只保留覆盖的变量名，值只在内存里传给平台。
+      params: stripSensitiveParams(triggerParams),
       projectRoot: project.root,
       serverPid: process.pid,
       ...(pipeline.environment ? { environment: pipeline.environment } : {}),
       ...(pipeline.tier ? { tier: pipeline.tier } : {}),
+      ...(overriddenVariables.length > 0 ? { overriddenVariables } : {}),
     }
     saveRecord(project.runsDir, record)
 
@@ -268,16 +291,103 @@ export class Runner {
       return this.#runShell(project, pipeline, record)
 
     const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
-    const out: TriggerResult = await provider.trigger({ params: record.params })
+    const out: TriggerResult = await provider.trigger({ params: triggerParams })
     Object.assign(record, {
       externalId: out.externalId ?? '',
       url: out.url ?? '',
       note: out.note ?? '',
       branches: out.branches && out.branches.length > 0 ? out.branches : undefined,
+      variables: out.variables && out.variables.length > 0 ? out.variables : undefined,
       checkedAt: new Date().toISOString(),
     })
     saveRecord(project.runsDir, record)
     return record
+  }
+
+  /** 只读：运行变量定义（只有 key/描述/标记，值不读取）。 */
+  async variables(project: Project, { pipeline }: { pipeline?: string } = {}): Promise<PipelineVariable[]> {
+    const name = String(pipeline ?? '').trim()
+    if (!name)
+      throw new PipelineError('缺少流水线名称。', '先用 cicd_list 查看可用的流水线。')
+    const target = project.config.pipelines[name]
+    if (!target)
+      throw new PipelineError(`没有名为「${name}」的流水线。已配置：${Object.keys(project.config.pipelines).join('、')}`)
+    if (target.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有运行变量。', 'shell 流水线没有平台运行变量。')
+    const provider = createProvider(target, await this.#envFor(project, target))
+    return provider.variables ? provider.variables() : []
+  }
+
+  /** 只读：平台侧最近运行列表（不含变量值/日志）。 */
+  async runs(project: Project, { pipeline, limit = 10 }: { pipeline?: string, limit?: number } = {}): Promise<PipelineRunSummary[]> {
+    const name = String(pipeline ?? '').trim()
+    const yunxiao = Object.values(project.config.pipelines).filter(item => item.type === 'yunxiao')
+    const target = name
+      ? project.config.pipelines[name]
+      : (yunxiao.length === 1 ? yunxiao[0] : undefined)
+    if (!target) {
+      if (name)
+        throw new PipelineError(`没有名为「${name}」的流水线。已配置：${Object.keys(project.config.pipelines).join('、')}`)
+      throw new PipelineError(
+        yunxiao.length > 1 ? '有多条云效流水线，请指定 pipeline。' : '当前项目没有云效流水线。',
+        yunxiao.length > 1 ? `可用：${yunxiao.map(item => item.name).join('、')}` : '先用 cicd_list 查看配置。',
+      )
+    }
+    if (target.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有平台运行历史。', 'shell 流水线请查本地运行记录。')
+    const provider = createProvider(target, await this.#envFor(project, target))
+    return provider.runs ? provider.runs(limit) : []
+  }
+
+  /** 写操作：通过/拒绝人工卡点；必须显式 confirm。 */
+  async approve(
+    project: Project,
+    { runId, action, confirm }: { runId?: string, action?: string, confirm?: boolean } = {},
+  ): Promise<{ record: RunRecord, note: string }> {
+    if (!confirm)
+      throw new PipelineError('人工卡点审批必须显式确认（confirm: true）。', '先把要操作的环境、阶段和动作告诉用户并得到同意。')
+    const id = String(runId ?? '').trim()
+    if (!id)
+      throw new PipelineError('缺少 runId。', '用 cicd_status / cicd_runs 找到运行。')
+    if (action !== 'pass' && action !== 'refuse')
+      throw new PipelineError('action 只能是 pass 或 refuse。')
+    const record = loadRecord(project.runsDir, id)
+    if (!record)
+      throw new PipelineError(`找不到运行记录：${id}`, '用 cicd_list / cicd_status 查看最近的 runId。')
+    if (record.status !== 'running')
+      throw new PipelineError(`运行已经是 ${record.status}，没有可审批的人工卡点。`)
+    const pipeline = project.config.pipelines[record.pipeline]
+    if (!pipeline)
+      throw new PipelineError(`流水线「${record.pipeline}」已从配置里移除，无法审批。`)
+    if (pipeline.type !== 'yunxiao')
+      throw new PipelineError('只有云效（yunxiao）流水线有人工卡点。', 'shell 流水线没有平台审批。')
+    const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
+    if (!provider.approve)
+      throw new PipelineError('当前平台适配器不支持人工卡点审批。')
+    const out = await provider.approve(record, action as ApprovalAction)
+    if (out.canceled)
+      this.#userCanceled.add(record.runId)
+    const refreshed = (await this.refresh(project, record).catch(() => record)) ?? record
+    if (out.canceled) {
+      const canceled = this.#canceledRecord(refreshed, undefined, '已拒绝手动阶段（运行已取消）')
+      saveRecord(project.runsDir, canceled)
+      return { record: canceled, note: out.note ?? '' }
+    }
+    return { record: refreshed, note: out.note ?? '' }
+  }
+
+  /** 统一生成取消记录：带标记、结束时间，并清掉 waiting/progress 里的等待态。 */
+  #canceledRecord(record: RunRecord, note?: string, progress?: string): RunRecord {
+    const next: RunRecord = {
+      ...record,
+      status: 'canceled',
+      canceledByUser: true,
+      finishedAt: record.finishedAt ?? new Date().toISOString(),
+      ...(note !== undefined ? { note } : {}),
+      ...(progress ? { progress } : {}),
+    }
+    delete next.waiting
+    return next
   }
 
   #runShell(project: Project, pipeline: ShellPipeline, record: RunRecord): RunRecord {
@@ -379,6 +489,12 @@ export class Runner {
     if (!record)
       return record
 
+    if (this.#userCanceled.has(record.runId)) {
+      const next = this.#canceledRecord(record)
+      saveRecord(project.runsDir, next)
+      return next
+    }
+
     if (record.type === 'shell') {
       const meta = this.children.get(record.runId)
       if (meta && !meta.done) {
@@ -428,6 +544,10 @@ export class Runner {
         next.note = out.note
       if (out.progress)
         next.progress = out.progress
+      if (out.waiting)
+        next.waiting = out.waiting
+      else
+        delete next.waiting
       if (out.branches?.length)
         next.branches = out.branches
       if (out.buildUrl)
@@ -443,6 +563,13 @@ export class Runner {
       }
       delete next.checkError
       delete next.checkErrorRetryable
+      // 轮询期间用户取消了：以取消为准，别用旧快照覆盖 canceledByUser。
+      if (this.#userCanceled.has(record.runId)) {
+        next.status = 'canceled'
+        next.canceledByUser = true
+        next.finishedAt = next.finishedAt ?? new Date().toISOString()
+        delete next.waiting
+      }
       saveRecord(project.runsDir, next)
       return next
     }
@@ -469,6 +596,14 @@ export class Runner {
       )
     }
     // 本地已取消是终态：平台事后可能把 run 标成 FAIL，不要把它改回失败。
+    if (this.#userCanceled.has(record.runId)) {
+      record.canceledByUser = true
+      if (record.status === 'running') {
+        record.status = 'canceled'
+        record.finishedAt = record.finishedAt ?? new Date().toISOString()
+      }
+      delete record.waiting
+    }
     if (record.status === 'canceled')
       return record
     return (await this.refresh(project, record)) as RunRecord
@@ -623,13 +758,14 @@ export class Runner {
       return record
 
     if (record.type === 'shell') {
+      this.#userCanceled.add(record.runId)
       const meta = this.children.get(record.runId)
       if (meta) {
         meta.canceled = true
         this.#kill(record.runId)
-        return { ...record, status: 'canceled', canceledByUser: true }
+        return this.#canceledRecord(record)
       }
-      const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: '没有找到活动子进程，已标记为取消', canceledByUser: true }
+      const next = this.#canceledRecord(record, '没有找到活动子进程，已标记为取消')
       saveRecord(project.runsDir, next)
       return next
     }
@@ -638,8 +774,16 @@ export class Runner {
     if (!pipeline)
       throw new PipelineError(`流水线「${record.pipeline}」已从配置里移除，无法取消。`)
     const provider = createProvider(pipeline, await this.#envFor(project, pipeline))
-    const out = await provider.cancel(record)
-    const next: RunRecord = { ...record, status: 'canceled', finishedAt: new Date().toISOString(), note: out?.note ?? '', canceledByUser: true }
+    this.#userCanceled.add(record.runId)
+    let out
+    try {
+      out = await provider.cancel(record)
+    }
+    catch (error) {
+      this.#userCanceled.delete(record.runId)
+      throw error
+    }
+    const next = this.#canceledRecord(record, out?.note ?? '')
     saveRecord(project.runsDir, next)
     return next
   }

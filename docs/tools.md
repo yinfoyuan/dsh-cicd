@@ -42,6 +42,27 @@
 
 > `[test · testing]` 是环境元数据（`environment` + `tier`），只影响展示。
 
+## cicd_runs
+
+只读：列出云效侧最近若干次运行，不依赖本地记录，不含日志和变量值。DSH 重启、换机器或别人触发后也能查。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pipeline` | string | | 流水线名称；当前项目只有一条云效流水线时可省略 |
+| `limit` | number | | 最多返回几条（1-30，默认 10） |
+
+示例输出：
+
+```
+云效最近运行（只读，2 条）：
+✅ #101 succeeded · API · 2026-10-29 09:00:00（3m0s）
+⏳ #102 running · 手动 · 2026-10-29 10:00:00
+```
+
+- 数据来自 `ListPipelineRuns`；触发方式 1 手动 / 2 定时 / 3 代码提交 / 4 API / 5 流水线 / 6 Webhook；
+- 不含日志与变量值；看某次运行的本地详情用 `cicd_status`；
+- 云效列表里「用户取消」也显示 `FAIL`，要区分取消/失败请看 `cicd_status` 的详情。
+
 ## cicd_run
 
 触发一条流水线，**立即返回** `runId`（异步，不阻塞）。触发后插件会自动开始**后台跟踪**：
@@ -52,16 +73,22 @@
 |---|---|---|---|
 | `pipeline` | string | ✅ | 流水线名称 |
 | `params` | json | | 传给平台的参数（分支、环境变量等） |
-| `branches` | json | | 云效多分支模式：本次要新增/替换的运行分支列表 |
+| `comment` | string | | 云效运行备注。模型把用户话里值得记录的运行上下文原话带上（版本、环境、目的、变更说明、工单号等）；运行配置弹窗会预填，用户可再改 |
+| `envs` | json | | 云效运行变量，如 `{ "APP_ENV": "test" }`；值支持字符串/数字/布尔。不确定有哪些变量时先用 `cicd_vars` 查 |
+| `tags` | json | | 云效按仓库地址指定的运行 tag，如 `{ "https://codeup.aliyun.com/<org>/<repo>.git": "1.0" }` |
+| `repoBranches` | json | | 云效按仓库地址指定的运行分支（`runningBranchs`）；多分支模式用 `branches`，不要用它 |
+| `artifacts` | json | | 云效制品版本：`{ "pipeline": { "<pipelineId>": "12" }, "acr": { "<registry>/<image>": "<tag>" }, "packages": { "<package>": "<version>" } }` |
+| `branches` | json | | 云效多分支模式：本次要新增/替换的运行分支列表。只在用户明确给出分支或要求替换时传；开启 runConfig 的流水线里它只是弹窗预选，不会跳过确认 |
 | `branchMode` | string | | 多分支处理方式：`append`（默认）或 `replace` |
 | `reusePrevious` | boolean | | 当用户明确要复用上次运行的分支集合时传 `true`：跳过弹窗，直接用上次集合 |
 | `interactive` | boolean | | 已弃用：默认就是弹窗；`false` 也不会跳过（只有 `reusePrevious:true` 跳过） |
+| `runConfig` | boolean | | 触发前是否弹「运行配置」（分支 + 变量 + 备注）：默认按流水线配置 `runConfig`；用户明确表示这次不改运行变量时传 `false`，只跳过变量/备注，分支确认仍会弹（除非 `reusePrevious`）；需要强制确认时传 `true` |
 | `preview` | boolean | | 配合弹窗：只选分支并返回，不触发 |
 | `confirm` | boolean | | `confirm: true` 的流水线必须显式传 `true` |
 | `followUp` | boolean | | 当用户诉求超出「触发」时传 `true`：结束后继续处理，或关注运行中的冲突/异常；只触发不传 |
 
 当用户在「触发」之外还有后续诉求时（例如运行结束后部署、失败后分析日志、关注合并冲突），
-传 `followUp: true`：触发后本轮仍立即结束，运行到终态或首次检测到合并冲突时，插件会用
+传 `followUp: true`：触发后本轮仍立即结束，运行到终态、首次检测到合并冲突或等待人工确认时，插件会用
 `agent.followup()` 唤醒模型，发一条带状态/耗时/冲突提示的消息，模型再按上下文继续做
 （冲突时用 `cicd_conflict` 读详情）。
 不要为了「等结果」传它；不传时只发 toast，用户之后可以再问。
@@ -86,6 +113,30 @@
 
 失败时返回中文原因；`ConfirmRequired` 会提示先向用户确认。
 
+## cicd_vars
+
+只读：列出云效流水线的运行变量（名称/描述/是否加密），**不读取变量值**。
+触发前用它确认有哪些变量可覆盖；覆盖用 `cicd_run` 的 `envs`，没传的用平台默认值。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `pipeline` | string | ✅ | 流水线名称（先用 `cicd_list` 查看） |
+
+示例输出：
+
+```
+流水线「deploy-test」的运行变量（只读，值不会读取）：2 个
+- VITE_BASE_URL：前端地址
+- NPM_TOKEN（已配置，值不可读）
+
+覆盖某个变量：cicd_run { "pipeline": "...", "envs": { "<key>": "<value>" } }；没传的用平台默认值。
+```
+
+- 变量来自云效流水线详情 `pipelineConfig.settings.globalParams[]`；
+- `value` 可能是明文密钥，插件**不读取、不回显、不落盘**；
+- 加密/掩码变量只显示「已配置，值不可读」；
+- shell 流水线没有运行变量，会直接报错。
+
 ## cicd_status
 
 查一次运行的状态，**只查一次、不阻塞**；不传 `runId` 时查某条流水线最近一次。
@@ -101,8 +152,10 @@
 行为：
 
 - 只返回当前 `status/progress/note`，**不等待**；已结束的运行直接返回终态；
+- 在等人工确认（如人工卡点）时，`progress` 会显示 `（等待人工确认）`，并多一行 `waiting: …`；
 - 后台跟踪（`cicd_run` 触发后）：阶段变化推 `⏳`；分支集成**冲突暂停**时推
-  `⚠️ 需要手动合并：请在云效解决冲突后点「Conflict Resolved」`；结束推 `✅/❌`；
+  `⚠️ 需要手动合并：请在云效解决冲突后点「Conflict Resolved」`；等待人工确认时推
+  `⏸ 等待人工确认：…`，处理完再推 `▶ 人工确认已完成`；结束推 `✅/❌`；
   失败时若日志里有「合并冲突 / 用户已取消」会在提示里点明；
 - 想看历史提示，点会话头部右上角的消息图标。
 
@@ -143,6 +196,23 @@
 3. 由用户回云效运行页点「Conflict Resolved」；
 4. 恢复后后台跟踪继续通知；插件不会自动点按钮。
 
+## cicd_approve
+
+对正在等待人工确认的云效运行执行操作。**写操作**：必须用户明确同意并传 `confirm: true`；插件不会自动决定。
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `runId` | string | ✅ | 运行 id |
+| `action` | string | ✅ | `pass`（通过/开始）或 `refuse`（拒绝；手动阶段等价取消运行） |
+| `confirm` | boolean | ✅ | 必须是 `true`：表示已获得用户明确同意 |
+
+- 人工卡点（job action `PassPipelineValidate`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，拒绝**没有**原因字段；
+- 手动触发阶段（阶段 `SWITCH_MANUAL` / job action `ExecutePipelineJobRun`）：
+  - `pass`：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start` 开始；
+  - `refuse`：云效没有阶段级拒绝接口，等价为**取消整个运行**（`PUT .../runs/{runId}`）；
+- 权限要求「流水线运行任务」读写；当前 token 无权限时会明确报错；
+- 操作成功后运行继续（或按拒绝取消），后台跟踪会提示，终态再通知。
+
 ## cicd_cancel
 
 取消一次运行：shell 结束整个进程树（Windows 用 `taskkill /t /f`）；
@@ -151,6 +221,7 @@
 取消后本地状态固定为 `canceled`；**仍会推一条 `⛔ 已取消` 的终态 toast，但不再唤醒模型**
 （取消结果已经在工具返回里）。平台侧取消（不是通过本工具）也按普通终态通知；
 即使云效事后把 run 标成 `FAIL` 或 job result 写「用户已取消」，也按取消处理。
+取消还会抑制该 run 在途的「等待人工确认」提醒（避免取消后还收到等待唤醒）。
 
 | 参数 | 类型 | 必填 |
 |---|---|---|
@@ -205,6 +276,45 @@
 > 插件 client 没加载（老版本 DSH / 纯 CLI）时，会回退到通用 `ctx.userQuestions` 提问
 > （那个 UI 不支持默认全选，语义反过来：勾选 = 取消）。不是多分支流水线、或没有上次运行记录时也会明确报错。
 
+### 云效运行参数
+
+`comment` / `envs` / `tags` / `repoBranches` / `artifacts` 会映射成云效 `CreatePipelineRun`
+的 `params` key，与 `params` 合并、命名参数优先（整体覆盖，不做深合并）：
+
+```json
+{
+  "pipeline": "deploy-test",
+  "comment": "发版 1.2.3",
+  "envs": { "APP_ENV": "test", "RETRIES": 2 },
+  "tags": { "https://codeup.aliyun.com/<org>/<repo>.git": "1.2.3" },
+  "repoBranches": { "https://codeup.aliyun.com/<org>/<repo>.git": "release" },
+  "artifacts": {
+    "pipeline": { "<pipelineId>": "12" },
+    "acr": { "<registry>/<image>": "<tag>" },
+    "packages": { "<package>": "<version>" }
+  }
+}
+```
+
+- `tags` / `repoBranches` 的 key 是仓库地址；`branches` 仍然是多分支模式的运行分支集合；
+- 值支持字符串/数字/布尔（统一转字符串），嵌套对象/数组会报错；
+- 只支持云效流水线，其他类型传这些参数会直接报错。
+
+### 运行配置弹窗（runConfig）
+
+流水线配置 `runConfig: true` 时，每次触发前会弹「运行配置」：
+
+- 多分支流水线：分支选择（默认全选）+ 运行变量 + 运行备注；
+- 单分支流水线：运行变量 + 运行备注；
+- 变量留空 = 不覆盖，使用云效当前值；只提交非空且属于该流水线变量定义的 key；
+- 模型从用户话里识别的 `envs` 会预填到输入框；用户清空则本次不覆盖；
+- 备注可由模型从用户话里提取并预填，用户清空则不发送；
+- 弹窗里输入的值只用于本次触发：不写运行记录、不回显到工具输出；
+- 用户明确表示这次不改运行变量时，模型可传 `runConfig: false`：只跳过变量/备注，
+  分支确认仍会弹（除非 `reusePrevious`）；
+- 开启 runConfig 的流水线上，显式 `branches` 只作为弹窗预选，不会跳过确认；
+- client 不在线时：分支回退到通用提问，变量全部用默认值，输出会提示。
+
 ## 进度提示（可选：客户端 toast / dsh-pet）
 
 `cicd_run` 触发后，后台跟踪 `RunWatcher` 会主动提示阶段变化和终态（**不依赖**任何等待工具），
@@ -219,14 +329,16 @@
 | 成功 | `✅ [test] 示例-部署 执行成功（3m36s）` |
 | 失败 | `❌ [test] 示例-部署 执行失败（52s）` |
 | 取消 | `⛔ [test] 示例-部署 已取消` |
+| 等待人工确认 | `⏸ [test] 示例-部署 等待人工确认：阶段「审批」。请到云效处理后继续（插件不会自动点）。` |
+| 人工确认完成 | `▶ [test] 示例-部署 人工确认已完成，继续运行` |
 
 实现：
 - 用户通过 `cicd_cancel` 主动取消时**仍推终态 toast，只是不再唤醒模型**（避免刚取消又被叫醒）；
 - toast：`GET /dsh-cicd/notices?since=N` 增量拉取；首次连接只同步序号，不重放历史；
 - pet：`POST /dsh-pet-7340/broadcast { text }`，1.5s 超时；
 - 关闭桌宠：配置 `pet: false`；toast 不依赖它，仍然保留。
-- `followUp: true` 时，终态和首次检测到合并冲突暂停还会用 `agent.followup()` 唤醒模型
-  （不是每次阶段变化都唤醒）。
+- `followUp: true` 时，终态、首次检测到合并冲突暂停、首次检测到等待人工确认还会用
+  `agent.followup()` 唤醒模型（不是每次阶段变化都唤醒）。
 
 ## 运行记录
 
@@ -244,8 +356,11 @@
 
 ```
 cicd_list                        # 看有哪些
+  → cicd_runs { pipeline }       # 云效侧最近运行（只读，找回 run）
+  → cicd_vars { pipeline }       # 需要覆盖运行变量时，先看变量名（不读值）
   → cicd_run { pipeline }        # 触发，拿 runId；本轮到此结束
                                   # 有后续动作时加 followUp:true，终态自动唤醒
+  → cicd_approve { runId, action: "pass", confirm: true }  # 等待人工卡点时
   → cicd_status { runId }        # 用户之后主动问进度时查一次
   → cicd_logs { runId }          # 失败时看日志
   → cicd_cancel { runId }        # 需要中止时

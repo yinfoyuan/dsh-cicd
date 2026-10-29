@@ -4,7 +4,7 @@ import type { Pipeline, RunRecord, YunxiaoPipeline } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { afterAll, beforeAll, it } from 'vitest'
-import { createProvider as createProviderTyped, getYunxiaoBranchState, isRetryable, mergeBranches, parseSourceBranches, pendingConflict, summarizeStages } from '../src/providers.js'
+import { createProvider as createProviderTyped, findManualGate, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, summarizeStages, triggerModeLabel, waitingFor } from '../src/providers.js'
 
 /** 测试里的流水线只写用到的字段，这里按 Pipeline 收窄。 */
 function createProvider(pipeline: Partial<Pipeline>): ReturnType<typeof createProviderTyped> {
@@ -19,6 +19,7 @@ process.env.YUNXIAO_TOKEN = 'pt-test'
 let server: Server
 let baseUrl: string
 let postBodies: Array<{ params: string }> = []
+let lastRunPayload: Record<string, unknown> | null = null
 
 beforeAll(async () => {
   server = createServer((req, res) => {
@@ -40,6 +41,13 @@ beforeAll(async () => {
         // 真实接口返回裸整数
         return send(200, '42', { 'content-type': 'text/plain' })
       }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P8/runs') {
+        return send(200, '45', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P5/runs') {
+        lastRunPayload = JSON.parse(JSON.parse(body || '{}').params)
+        return send(200, '44', { 'content-type': 'text/plain' })
+      }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42') {
         return send(200, JSON.stringify({
           status: 'FAIL',
@@ -48,6 +56,111 @@ beforeAll(async () => {
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1/runs/42/job/7/log') {
         return send(200, JSON.stringify({ content: 'boom log', last: 1, more: false }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P11/runs?page=1&perPage=5') {
+        return send(200, JSON.stringify([
+          {
+            pipelineRunId: 101,
+            status: 'SUCCESS',
+            startTime: Date.UTC(2026, 9, 29, 1, 0, 0),
+            endTime: Date.UTC(2026, 9, 29, 1, 3, 0),
+            triggerMode: 4,
+            creatorAccountId: 'acc1',
+          },
+          {
+            pipelineRunId: 102,
+            status: 'RUNNING',
+            startTime: Date.UTC(2026, 9, 29, 2, 0, 0),
+            triggerMode: 1,
+          },
+        ]))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P12/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [
+            { name: '构建', stageInfo: { status: 'SUCCESS', jobs: [{ id: 8, status: 'SUCCESS' }] } },
+            {
+              name: '审批',
+              stageInfo: {
+                status: 'SWITCH_MANUAL',
+                jobs: [{
+                  id: 9,
+                  name: '人工卡点',
+                  status: 'RUNNING',
+                  actions: [{ type: 'PassPipelineValidate', disable: false }],
+                }],
+              },
+            },
+          ],
+        }))
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P12/pipelineRuns/1/jobs/9/pass') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P12/pipelineRuns/1/jobs/9/refuse') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P13/runs/1') {
+        return send(200, JSON.stringify({ status: 'RUNNING', stages: [] }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P14/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [{
+            name: '审批',
+            stageInfo: {
+              status: 'SWITCH_MANUAL',
+              jobs: [{ id: 10, name: '人工卡点', actions: [{ type: 'PassPipelineValidate', disable: true }] }],
+            },
+          }],
+        }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [{
+            name: '命令',
+            stageInfo: {
+              status: 'SWITCH_MANUAL',
+              jobs: [{ id: 11, name: '执行命令', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+            },
+          }],
+        }))
+      }
+      if (req.method === 'POST' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/pipelineRuns/1/jobs/11/start') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'PUT' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P15/runs/1') {
+        return send(200, 'true', { 'content-type': 'text/plain' })
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P10/runs/1') {
+        return send(200, JSON.stringify({
+          status: 'RUNNING',
+          stages: [
+            { name: '构建', stageInfo: { status: 'SUCCESS', jobs: [{ id: 1, status: 'SUCCESS' }] } },
+            { name: '审批', stageInfo: { status: 'SWITCH_MANUAL', jobs: [{ id: 2, status: 'INIT' }] } },
+            { name: '部署', stageInfo: { status: 'INIT', jobs: [{ id: 3, status: 'INIT' }] } },
+          ],
+        }))
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P9') {
+        return send(200, 'secret-value-not-json')
+      }
+      if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P8') {
+        return send(200, JSON.stringify({
+          name: 'P8',
+          pipelineConfig: {
+            sources: [{ data: { isBranchMode: false } }],
+            settings: JSON.stringify({
+              globalParams: [
+                { key: 'VITE_BASE_URL', value: 'https://secret.example.com', description: '前端地址', runningConfig: true, encrypted: false, masked: false },
+                { key: 'NPM_TOKEN', value: 'pt-super-secret', runningConfig: true, encrypted: true, masked: true },
+                { created: true },
+              ],
+            }),
+          },
+        }))
       }
       if (req.method === 'GET' && req.url === '/oapi/v1/flow/organizations/ORG/pipelines/P1') {
         return send(200, JSON.stringify({
@@ -159,6 +272,102 @@ it('云效：触发响应是裸整数，解析成 runId', async () => {
   assert.equal(run.externalId, '42')
 })
 
+it('云效：运行参数原样透传，本次参数覆盖配置默认值', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P5',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    branchMode: 'off',
+    params: { comment: 'from-config', envs: { A: '1' } },
+  })
+  const run = await provider.trigger({
+    params: {
+      comment: 'from-tool',
+      envs: { B: '2' },
+      runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+      runningPipelineArtifacts: { 3184679: '12' },
+    },
+  })
+  assert.equal(run.externalId, '44')
+  assert.deepEqual(lastRunPayload, {
+    comment: 'from-tool',
+    envs: { B: '2' },
+    runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    runningPipelineArtifacts: { 3184679: '12' },
+  })
+})
+
+it('云效：运行变量只读副本，不包含值', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P8',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const variables = await provider.variables?.()
+  assert.deepEqual(variables, [
+    { key: 'VITE_BASE_URL', description: '前端地址', runningConfig: true },
+    { key: 'NPM_TOKEN', runningConfig: true, encrypted: true, masked: true },
+  ])
+  assert.doesNotMatch(JSON.stringify(variables), /secret|pt-/)
+})
+
+it('云效：触发时带回变量副本（不含值）', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P8',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    branchMode: 'off',
+    params: {},
+  })
+  const run = await provider.trigger({ params: {} })
+  assert.equal(run.externalId, '45')
+  assert.equal(run.variables?.length, 2)
+  assert.doesNotMatch(JSON.stringify(run), /secret|pt-/)
+})
+
+it('云效：变量读取失败时不回显响应体', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P9',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  await assert.rejects(
+    () => provider.variables!(),
+    (error: Error) => {
+      assert.doesNotMatch(error.message, /secret-value/)
+      assert.match(error.message, /读取云效运行变量失败/)
+      return true
+    },
+  )
+})
+
+it('parsePipelineVariables：只取元数据，value 与无 key 项被忽略', () => {
+  const settings = JSON.stringify({
+    globalParams: [
+      { key: 'A', value: 'secret-a', encrypted: true, runningConfig: true },
+      { key: 'B', value: 123, description: '说明' },
+      { noKey: true },
+      null,
+    ],
+  })
+  assert.deepEqual(parsePipelineVariables(settings), [
+    { key: 'A', runningConfig: true, encrypted: true },
+    { key: 'B', description: '说明' },
+  ])
+  assert.deepEqual(parsePipelineVariables('not-json'), [])
+  assert.deepEqual(parsePipelineVariables({ globalParams: null }), [])
+})
+
 it('云效：FAIL → failed', async () => {
   const provider = createProvider({
     type: 'yunxiao',
@@ -198,6 +407,130 @@ it('云效：取消走 PUT', async () => {
   })
   const out = await provider.cancel(record('42'))
   assert.match(String(out.note), /true/)
+})
+
+it('云效：SWITCH_MANUAL 识别为等待人工确认', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P10',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const out = await provider.poll(record('1'))
+  assert.equal(out.status, 'running')
+  assert.match(String(out.progress), /等待人工确认/)
+  assert.match(String(out.waiting), /审批/)
+
+  const run = {
+    stages: [
+      { name: '构建', stageInfo: { status: 'SUCCESS', jobs: [{ status: 'SUCCESS' }] } },
+      { name: '审批', stageInfo: { status: 'SWITCH_MANUAL', jobs: [{ status: 'INIT' }] } },
+    ],
+  }
+  assert.match(waitingFor(run), /审批/)
+  assert.equal(waitingFor({ stages: [] }), '')
+})
+
+it('云效：运行历史映射状态/耗时/触发方式', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P11',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const runs = await provider.runs?.(5)
+  assert.equal(runs?.length, 2)
+  assert.equal(runs?.[0]?.externalId, '101')
+  assert.equal(runs?.[0]?.status, 'succeeded')
+  assert.equal(runs?.[0]?.durationMs, 180_000)
+  assert.equal(runs?.[0]?.triggerMode, 4)
+  assert.equal(runs?.[0]?.creatorAccountId, 'acc1')
+  assert.equal(runs?.[1]?.status, 'running')
+  assert.equal(triggerModeLabel(4), 'API')
+  assert.equal(triggerModeLabel(99), '')
+})
+
+it('云效：人工卡点按 actions 定位并 pass/refuse', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P12',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const pass = await provider.approve?.(record('1'), 'pass')
+  assert.match(String(pass?.note), /已通过人工卡点/)
+  const refuse = await provider.approve?.(record('1'), 'refuse')
+  assert.match(String(refuse?.note), /已拒绝人工卡点/)
+
+  const gate = findManualGate({
+    stages: [{
+      name: '审批',
+      stageInfo: {
+        status: 'SWITCH_MANUAL',
+        jobs: [{ id: 9, name: '人工卡点', actions: [{ type: 'PassPipelineValidate', disable: false }] }],
+      },
+    }],
+  })
+  assert.equal(gate?.jobId, 9)
+  assert.equal(gate?.kind, 'validate')
+  assert.equal(gate?.canApprove, true)
+})
+
+it('云效：没有卡点或没有审批权限时明确报错', async () => {
+  const none = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P13',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  await assert.rejects(() => none.approve!(record('1'), 'pass'), /没有等待人工确认的卡点/)
+
+  const denied = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P14',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  await assert.rejects(() => denied.approve!(record('1'), 'pass'), /操作权限/)
+})
+
+it('云效：手动触发阶段 /start；拒绝等价取消运行', async () => {
+  const provider = createProvider({
+    type: 'yunxiao',
+    baseUrl,
+    organizationId: 'ORG',
+    pipelineId: 'P15',
+    tokenEnv: 'YUNXIAO_TOKEN',
+    params: {},
+  })
+  const started = await provider.approve?.(record('1'), 'pass')
+  assert.match(String(started?.note), /已开始手动阶段/)
+
+  const refused = await provider.approve?.(record('1'), 'refuse')
+  assert.match(String(refused?.note), /已拒绝手动阶段并取消运行/)
+  assert.equal(refused?.canceled, true)
+
+  const gate = findManualGate({
+    stages: [{
+      name: '命令',
+      stageInfo: {
+        status: 'SWITCH_MANUAL',
+        jobs: [{ id: 11, name: '执行命令', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+      },
+    }],
+  })
+  assert.equal(gate?.kind, 'start')
+  assert.equal(gate?.jobId, 11)
 })
 
 it('云效：summarizeStages 从 jobs 推断当前阶段', () => {

@@ -51,6 +51,7 @@ export class RunWatcher {
   #runner: WatcherRunner
   #options: RunWatcherOptions
   #timers = new Map<string, NodeJS.Timeout>()
+  #mutedWaiting = new Set<string>()
   #disposed = false
 
   constructor(runner: WatcherRunner, options: RunWatcherOptions) {
@@ -62,11 +63,13 @@ export class RunWatcher {
   watch(project: Project, record: RunRecord, hooks?: WatchHooks): void {
     if (this.#disposed || this.#timers.has(record.runId))
       return
+    this.#mutedWaiting.delete(record.runId)
     const startedAt = Date.now()
     let lastProgress = record.progress ?? ''
     let delay = FIRST_DELAY_MS
     let lastLogCheck = 0
     let conflictNotified = false
+    let waitingNotified = false
     let hint = ''
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
@@ -121,7 +124,35 @@ export class RunWatcher {
         return
       }
 
-      if (current.progress && current.progress !== lastProgress) {
+      const waitingText = String(current.waiting ?? '')
+      if (waitingText) {
+        // 等待人工操作时不要再刷「阶段运行中」，只提示一次「在等人」。
+        lastProgress = current.progress ?? lastProgress
+        if (!waitingNotified && !this.#mutedWaiting.has(record.runId)) {
+          waitingNotified = true
+          try {
+            this.#options.notice(
+              `⏸ ${label(current)} 等待人工确认：${waitingText}。请到云效处理后继续（插件不会自动点）。`,
+              project.root,
+              current.runId,
+            )
+          }
+          catch {}
+          try {
+            hooks?.onWaiting?.(current)
+          }
+          catch {}
+        }
+      }
+      else if (waitingNotified) {
+        waitingNotified = false
+        try {
+          this.#options.notice(`▶ ${label(current)} 人工确认已完成，继续运行`, project.root, current.runId)
+        }
+        catch {}
+      }
+
+      if (!waitingText && current.progress && current.progress !== lastProgress) {
         lastProgress = current.progress
         try {
           this.#options.notice(`⏳ ${label(current)} · ${current.progress}`, project.root, current.runId)
@@ -177,9 +208,18 @@ export class RunWatcher {
     }, delay))
   }
 
+  /**
+   * 用户取消后抑制「等待人工确认」提醒：取消前已经在途的等待唤醒不再补发；
+   * 终态 toast 仍由后续轮询照常发出。
+   */
+  muteWaiting(runId: string): void {
+    this.#mutedWaiting.add(runId)
+  }
+
   dispose(): void {
     this.#disposed = true
     for (const timer of this.#timers.values()) clearTimeout(timer)
     this.#timers.clear()
+    this.#mutedWaiting.clear()
   }
 }

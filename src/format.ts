@@ -86,6 +86,23 @@ export function conflictWakeText(record: RunRecord): string {
   ].filter(Boolean).join('\n')
 }
 
+/**
+ * 检测到运行在等人工操作（人工卡点等）时唤醒模型：提示用户去云效处理，插件不会自动确认。
+ */
+export function waitingWakeText(record: RunRecord): string {
+  const env = environmentLabel(record)
+  return [
+    `【dsh-cicd 后台通知】${env ? `${env} ` : ''}${record.title || record.pipeline} 正在等待人工确认（不是终态）：${record.waiting ?? '未知阶段'}`,
+    `runId:   ${record.runId}`,
+    record.progress ? `progress: ${record.progress}` : '',
+    '',
+    '请提醒用户到云效点「通过」或对应按钮后继续；插件不会自动确认。',
+    '处理完成后运行会继续；可再用 cicd_status 查看，完成/失败时会再通知。',
+    '（这是插件自动唤醒的消息，不是用户的新发言。）',
+  ].filter(Boolean).join('\n')
+}
+
+// eslint-disable-next-line sonarjs/cognitive-complexity -- 状态输出的字段组合较多，拆函数反而分散可读性
 export function recordText(record: RunRecord): string {
   const lines = [
     `${ICON[record.status] ?? '•'} ${record.pipeline} · ${record.status}`,
@@ -109,8 +126,12 @@ export function recordText(record: RunRecord): string {
     lines.push(`rawStatus: ${record.rawStatus}`)
   if (record.branches?.length)
     lines.push(`branches: ${record.branches.join('、')}`)
+  if (record.variables?.length)
+    lines.push(`运行变量: ${record.variables.length} 个（只有名称，值不读取）`)
   if (record.progress)
     lines.push(`progress:  ${record.progress}`)
+  if (record.waiting)
+    lines.push(`waiting: ${record.waiting}`)
   if (record.url)
     lines.push(`url:     ${record.url}`)
   if (record.note)

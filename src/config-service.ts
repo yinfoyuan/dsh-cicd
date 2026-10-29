@@ -37,6 +37,7 @@ const ALLOWED_PIPELINE_FIELDS = [
   'tier',
   'confirm',
   'branchMode',
+  'runConfig',
   'command',
   'url',
   'baseUrl',
@@ -89,6 +90,7 @@ interface PipelineView {
   tier?: string
   confirm?: boolean
   branchMode?: string
+  runConfig?: boolean
   command?: string
 }
 
@@ -104,6 +106,7 @@ function pipelineSummary(rawName: string, pipeline: Record<string, unknown>, roo
     branchMode: text('branchMode'),
     command: text('command'),
     confirm: pipeline.confirm === true,
+    runConfig: pipeline.runConfig === true,
   }
   const latest = latestRecord(join(root, '.dsh', 'cicd-runs'), rawName)
   return {
@@ -115,6 +118,7 @@ function pipelineSummary(rawName: string, pipeline: Record<string, unknown>, roo
     ...(entry.environment ? { environment: entry.environment } : {}),
     ...(entry.tier ? { tier: entry.tier } : {}),
     confirm: entry.confirm === true,
+    ...(entry.runConfig ? { runConfig: true } : {}),
     ...(entry.branchMode ? { branchMode: entry.branchMode } : {}),
     ...(entry.type === 'shell' ? { command: entry.command } : {}),
     ...(latest

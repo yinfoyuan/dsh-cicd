@@ -91,6 +91,7 @@ export const CICD_CONFIG_SKILL = `# 生成 dsh-cicd 配置
   中心版（\`openapi-rdc.aliyuncs.com\`）缺 \`organizationId\` 会直接配置报错；Region 版才可留空。
 - \`environment\` 自由文本；不再要求 \`tier\`（旧配置的 tier 仍兼容，但不再展示/编辑）。
 - \`branchMode\` ∈ \`append\` / \`replace\` / \`off\`。
+- \`runConfig\` 可选：\`true\` = 每次触发前弹运行配置（分支 + 运行变量 + 备注）；变量留空 = 用云效默认值。
 - 任何字段都不能出现 token 明文；只写 \`tokenEnv\` 引用。
 - 配置改完立即生效（按 mtime 缓存），不用重启 DSH。
 

@@ -16,6 +16,23 @@ export type EnvironmentTier = 'development' | 'testing' | 'staging' | 'productio
 
 export type EnvMap = Record<string, string | undefined>
 
+/**
+ * 云效流水线的运行变量定义（只有元数据）。
+ *
+ * 平台详情接口会返回 `value`（可能是明文密钥），这里**故意不映射 value**：
+ * 变量值永远不进工具输出、日志、通知或运行记录，只做触发时的显式覆盖。
+ */
+export interface PipelineVariable {
+  key: string
+  description?: string
+  /** 运行时可配置（云效运行弹窗里会显示）。 */
+  runningConfig?: boolean
+  /** 加密变量：只展示「已配置」，值不可读。 */
+  encrypted?: boolean
+  /** 掩码变量：只展示「已配置」，值不可读。 */
+  masked?: boolean
+}
+
 export interface PipelineBase {
   name: string
   type: PipelineType
@@ -52,6 +69,11 @@ export interface YunxiaoPipeline extends PipelineBase {
    * - off：完全不处理，按普通 params 透传
    */
   branchMode?: 'append' | 'replace' | 'off'
+  /**
+   * 触发前是否弹「运行配置」弹窗（分支 + 运行变量 + 备注）。
+   * 默认 false；模型可按用户意图用 `cicd_run.runConfig` 覆盖。
+   */
+  runConfig?: boolean
 }
 
 export type Pipeline
@@ -106,6 +128,12 @@ export interface RunRecord {
   buildUrl?: string
   /** 云效多分支模式：本次集成/运行的分支列表。 */
   branches?: string[]
+  /** 云效运行变量副本（只有 key/描述/标记，不含值）；触发时写入，供后续展示。 */
+  variables?: PipelineVariable[]
+  /** 本次显式覆盖的运行变量名（只有 key，值不落盘）。 */
+  overriddenVariables?: string[]
+  /** 正在等待人工操作（例如人工卡点）；空/未设置为不等待。 */
+  waiting?: string
   /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
   canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */
@@ -123,6 +151,8 @@ export interface TriggerResult {
   note?: string
   /** 云效多分支模式：本次实际提交的分支列表。 */
   branches?: string[]
+  /** 云效运行变量副本（只有元数据，不含值）。 */
+  variables?: PipelineVariable[]
 }
 
 export interface PollResult {
@@ -131,6 +161,8 @@ export interface PollResult {
   rawStatus?: string
   note?: string
   progress?: string
+  /** 等待人工操作（人工卡点等）的说明；空表示不等待。 */
+  waiting?: string
   buildUrl?: string
   exitCode?: number
   /** 云效多分支模式：本次运行集成的分支。 */
@@ -142,6 +174,20 @@ export interface LogOptions {
   maxChars?: number
 }
 
+/** 平台侧运行历史的一条摘要（只读；不含变量值/日志）。 */export interface PipelineRunSummary {
+  externalId: string
+  status: RunStatus
+  rawStatus?: string
+  startedAt: string
+  finishedAt?: string
+  durationMs?: number
+  /** 云效 triggerMode：1 手动 / 2 定时 / 3 代码提交 / 4 API / 5 流水线 / 6 Webhook。 */
+  triggerMode?: number
+  creatorAccountId?: string
+}
+
+export type ApprovalAction = 'pass' | 'refuse'
+
 /** 每种平台适配器的统一接口。 */
 export interface Provider {
   trigger: (input: TriggerInput) => Promise<TriggerResult>
@@ -149,6 +195,12 @@ export interface Provider {
   logs: (record: RunRecord, options?: LogOptions) => Promise<string>
   /** 只读：抓取分支管理器相关 job 的日志（用于冲突解析）；没有实现时回退 logs。 */
   conflictLogs?: (record: RunRecord) => Promise<string>
+  /** 只读：流水线运行变量定义（只有元数据，不含值）；没有实现时返回空。 */
+  variables?: () => Promise<PipelineVariable[]>
+  /** 只读：平台侧最近运行列表；没有实现时返回空。 */
+  runs?: (limit: number) => Promise<PipelineRunSummary[]>
+  /** 写操作：通过/拒绝人工卡点；没有卡点时抛错。 */
+  approve?: (record: RunRecord, action: ApprovalAction) => Promise<{ note?: string, canceled?: boolean }>
   cancel: (record: RunRecord) => Promise<{ note?: string }>
 }
 
@@ -186,6 +238,8 @@ export interface WatchHooks {
   onTerminal?: (record: RunRecord, hint?: string) => void
   /** 分支集成检测到合并冲突、运行暂停（不是终态）。每次运行只回调一次。 */
   onConflict?: (record: RunRecord) => void
+  /** 检测到运行在等待人工操作（人工卡点等，不是终态）。每次运行只回调一次。 */
+  onWaiting?: (record: RunRecord) => void
 }
 
 /** DSH Agent 句柄里插件用到的部分（`followup` 由 DSH 运行时提供，旧版本可能没有）。 */

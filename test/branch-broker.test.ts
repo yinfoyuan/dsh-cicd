@@ -23,8 +23,14 @@ interface NoticesResponse {
 
 interface BranchRequest {
   id: string
+  kind?: string
   title: string
   previous: string[]
+  showBranches?: boolean
+  showComment?: boolean
+  comment?: string
+  envs?: Record<string, string>
+  variables?: Array<{ key: string }>
   environment?: string
   tier?: string
 }
@@ -143,6 +149,43 @@ it('broker：全部取消且无新增 → 至少一个分支', async () => {
   const { request } = await getRequest()
   await postAnswer({ id: request!.id, selected: [], custom: '' })
   await rejected
+  broker.dispose()
+})
+
+it('broker：运行配置请求 → 变量白名单 + 空值不覆盖', async () => {
+  const broker = makeBroker()
+  broker.registerRoutes()
+  await getRequest()
+
+  const pending = broker.askRunConfig({
+    title: 'deploy',
+    previous: ['main'],
+    showBranches: true,
+    showComment: true,
+    comment: '预发布版本',
+    envs: { A: '1' },
+    variables: [{ key: 'A' }, { key: 'B', encrypted: true }],
+  })
+  const { request } = await getRequest()
+  assert.equal(request!.kind, 'runConfig')
+  assert.equal(request!.showBranches, true)
+  assert.equal(request!.showComment, true)
+  assert.equal(request!.comment, '预发布版本')
+  assert.deepEqual(request!.envs, { A: '1' })
+  assert.equal(request!.variables?.length, 2)
+
+  const answer = await postAnswer({
+    id: request!.id,
+    selected: ['main'],
+    envs: { A: '1', B: '', UNKNOWN: 'x' },
+    comment: '发版',
+  })
+  assert.equal(answer.status, 200)
+
+  const choice = await pending
+  assert.deepEqual(choice.envs, { A: '1' })
+  assert.deepEqual(choice.branches?.branches, ['main'])
+  assert.equal(choice.comment, '发版')
   broker.dispose()
 })
 

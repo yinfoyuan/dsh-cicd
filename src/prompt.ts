@@ -5,7 +5,7 @@
  * 这里只做「协议」和「解析」，不依赖具体 UI；UI 由
  * `@deepseek-ai/dsh-client-ui-user-questions` 之类的 client 插件提供。
  */
-import type { PluginContext, ToolRunContext } from './types.js'
+import type { PipelineVariable, PluginContext, ToolRunContext } from './types.js'
 
 interface QuestionOption {
   label: string
@@ -158,5 +158,61 @@ export function askContextFromExec(exec: ToolRunContext): { agent?: unknown, sig
   return {
     ...(exec?.agent !== undefined ? { agent: exec.agent } : {}),
     ...(exec?.signal !== undefined ? { signal: exec.signal } : {}),
+  }
+}
+
+export interface RunConfigOptions {
+  title: string
+  /** 多分支流水线的上次分支；非多分支传空数组。 */
+  previous: string[]
+  /** 是否显示分支选择区。 */
+  showBranches: boolean
+  /** 运行变量定义（只读元数据，不含值）。 */
+  variables: PipelineVariable[]
+  /** 是否显示运行备注输入框。 */
+  showComment: boolean
+  /** 初始备注（模型从用户话里识别的运行上下文，例如版本/环境/目的）；弹窗预填。 */
+  comment?: string
+  /** 初始变量覆盖（模型从用户话里识别的「某变量为某值」）；弹窗预填，用户可改。 */
+  envs?: Record<string, string>
+  environment?: string
+  tier?: string
+  agent?: unknown
+  signal?: AbortSignal
+}
+
+export interface RunConfigChoice {
+  /** 显示分支区时的最终分支集合。 */
+  branches?: BranchChoice
+  /** 只包含用户真的填了值的变量（空串/未知 key 会被丢掉）。 */
+  envs: Record<string, string>
+  comment?: string
+}
+
+/** 解析「运行配置」弹窗答案：变量只认白名单 key，空值不覆盖（用平台默认值）。 */
+export function parseRunConfigAnswer(
+  options: Pick<RunConfigOptions, 'previous' | 'showBranches' | 'variables'>,
+  answer: { selected?: string[], custom?: string, envs?: Record<string, unknown>, comment?: string },
+): RunConfigChoice {
+  const branches = options.showBranches
+    ? parseKeepAnswer(options.previous, { selected: answer.selected, custom: answer.custom })
+    : undefined
+  if (branches && branches.branches.length === 0)
+    throw new Error('多分支流水线至少要有一个运行分支：请至少保留一个，或在输入框里新增一个')
+
+  const allowed = new Set(options.variables.map(variable => variable.key))
+  const envs: Record<string, string> = {}
+  for (const [key, value] of Object.entries(answer.envs ?? {})) {
+    if (!allowed.has(key))
+      continue
+    const text = String(value ?? '').trim()
+    if (text)
+      envs[key] = text
+  }
+  const comment = typeof answer.comment === 'string' ? answer.comment.trim() : undefined
+  return {
+    ...(branches ? { branches } : {}),
+    envs,
+    ...(comment !== undefined ? { comment } : {}),
   }
 }

@@ -1,4 +1,4 @@
-import type { AskBranchesOptions } from '../src/prompt.js'
+import type { AskBranchesOptions, RunConfigOptions } from '../src/prompt.js'
 import type { Project, RunRecord, ToolSpec, WatchHooks } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -46,11 +46,12 @@ beforeAll(() => {
   writeFileSync(join(root, '.dsh', 'cicd.json'), JSON.stringify({
     defaults: { timeoutSec: 30, logTailLines: 50 },
     pipelines: {
-      ping: { type: 'shell', title: 'ping', environment: 'test', tier: 'testing', command: 'node -e "console.log(\'ping-ok\')"' },
-      boom: { type: 'shell', title: 'boom', command: 'node -e "console.log(\'boom\'); process.exit(3)"' },
-      slow: { type: 'shell', title: 'slow', command: 'node -e "setTimeout(()=>{}, 5000)"' },
-      guarded: { type: 'shell', title: 'guarded', command: 'node -e "console.log(\'guarded\')"', confirm: true },
-      multibranch: { type: 'yunxiao', title: '多分支', environment: 'test', tier: 'testing', organizationId: 'ORG', pipelineId: 'P3', tokenEnv: 'YUNXIAO_TOKEN' },
+      'ping': { type: 'shell', title: 'ping', environment: 'test', tier: 'testing', command: 'node -e "console.log(\'ping-ok\')"' },
+      'boom': { type: 'shell', title: 'boom', command: 'node -e "console.log(\'boom\'); process.exit(3)"' },
+      'slow': { type: 'shell', title: 'slow', command: 'node -e "setTimeout(()=>{}, 5000)"' },
+      'guarded': { type: 'shell', title: 'guarded', command: 'node -e "console.log(\'guarded\')"', confirm: true },
+      'multibranch': { type: 'yunxiao', title: '多分支', environment: 'test', tier: 'testing', organizationId: 'ORG', pipelineId: 'P3', tokenEnv: 'YUNXIAO_TOKEN' },
+      'auto-config': { type: 'yunxiao', title: '自动运行配置', organizationId: 'ORG', pipelineId: 'P8', tokenEnv: 'YUNXIAO_TOKEN', runConfig: true },
     },
   }, null, 2), 'utf8')
 
@@ -67,14 +68,17 @@ function runIdOf(text: string) {
   return text.match(/runId:\s+([\w.-]+)/)?.[1] ?? ''
 }
 
-it('注册了六个工具', () => {
+it('注册了九个工具', () => {
   assert.deepEqual(tools.map((t: ToolSpec) => t.name).sort(), [
+    'cicd_approve',
     'cicd_cancel',
     'cicd_conflict',
     'cicd_list',
     'cicd_logs',
     'cicd_run',
+    'cicd_runs',
     'cicd_status',
+    'cicd_vars',
   ])
 })
 
@@ -83,7 +87,7 @@ it('cicd_list 列出配置和最近状态', async () => {
   assert.match(result.text, /ping/)
   assert.match(result.text, /boom/)
   assert.match(result.text, /\[test\]/)
-  assert.match(result.text, /流水线：5 条/)
+  assert.match(result.text, /流水线：6 条/)
 })
 
 it('cicd_run 输出环境元数据', async () => {
@@ -679,9 +683,605 @@ it('cicd_run followUp:true 在终态/冲突时唤醒模型，消息带状态和�
   assert.match(messages[1].content[0].text, /合并冲突/)
   assert.match(messages[1].content[0].text, /cicd_conflict/)
   assert.match(messages[1].content[0].text, /不是终态/)
+
+  const waitingRecord = {
+    ...conflictRecord,
+    note: undefined,
+    waiting: '阶段「审批」',
+    progress: '阶段 2/3 · 审批（等待人工确认）',
+  } as RunRecord
+  captured[0].onWaiting?.(waitingRecord)
+  assert.equal(messages.length, 3)
+  assert.match(messages[2].content[0].text, /等待人工确认/)
+  assert.match(messages[2].content[0].text, /不是终态/)
 })
 
 it('cicd_run followUp:true 在旧运行时降级为提示', async () => {
   const run = await tool('cicd_run').execute({ pipeline: 'ping', followUp: true }, execFor())
   assert.match(run.text, /不支持自动唤醒/)
+})
+
+it('cicd_run 云效运行参数：comment/envs/tags/repoBranches/artifacts 映射成平台 params', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubRunner = {
+    run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+      captured = opts.params
+      return {
+        runId: 'r1',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }
+    },
+  }
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: stubRunner,
+    options: {},
+    ctx: { tools: { register() {} } },
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run').execute({
+    pipeline: 'multibranch',
+    comment: 'deploy from chat',
+    envs: { APP_ENV: 'test', RETRIES: 2, DEBUG: true },
+    tags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    repoBranches: { 'https://codeup.aliyun.com/demo/repo.git': 'release' },
+    artifacts: {
+      pipeline: { 3184679: '12' },
+      acr: { 'registry.example.com/app': 'tag-1' },
+      packages: { 'generic/repo/pkg': '1.2.3' },
+    },
+  }, execFor())
+  assert.deepEqual(captured, {
+    comment: 'deploy from chat',
+    envs: { APP_ENV: 'test', RETRIES: '2', DEBUG: 'true' },
+    runningTags: { 'https://codeup.aliyun.com/demo/repo.git': '1.0' },
+    runningBranchs: { 'https://codeup.aliyun.com/demo/repo.git': 'release' },
+    runningPipelineArtifacts: { 3184679: '12' },
+    runningAcrArtifacts: { 'registry.example.com/app': 'tag-1' },
+    runningPackagesArtifacts: { 'generic/repo/pkg': '1.2.3' },
+  })
+})
+
+it('cicd_run 云效运行参数：命名参数覆盖 params 里的同名 key', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubRunner = {
+    run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+      captured = opts.params
+      return {
+        runId: 'r2',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }
+    },
+  }
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: stubRunner,
+    options: {},
+    ctx: { tools: { register() {} } },
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run').execute({
+    pipeline: 'multibranch',
+    params: { comment: 'old', envs: { A: '1' } },
+    comment: 'new',
+    envs: { B: '2' },
+  }, execFor())
+  assert.deepEqual(captured, { comment: 'new', envs: { B: '2' } })
+})
+
+it('cicd_run 云效运行参数：shell 流水线明确报错', async () => {
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'ping', comment: 'x' }, execFor()),
+    /只支持云效/,
+  )
+})
+
+it('cicd_run 云效运行参数：形状不合法时给出可照做的错误', async () => {
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', envs: ['x'] }, execFor()),
+    /envs 必须是对象/,
+  )
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', envs: { A: { nested: 1 } } }, execFor()),
+    /envs\.A 必须是/,
+  )
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'multibranch', artifacts: { unknown: { a: 'b' } } }, execFor()),
+    /只支持 pipeline \/ acr \/ packages/,
+  )
+})
+
+it('cicd_runs 输出平台侧历史', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      runs: async () => ([
+        { externalId: '101', status: 'succeeded', startedAt: new Date('2026-10-29T01:00:00Z').toISOString(), durationMs: 180_000, triggerMode: 4 },
+        { externalId: '102', status: 'running', startedAt: new Date('2026-10-29T02:00:00Z').toISOString(), triggerMode: 1 },
+      ]),
+    },
+    options: {},
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_runs')
+    .execute({}, execFor())
+  assert.match(result.text, /#101/)
+  assert.match(result.text, /API/)
+  assert.match(result.text, /#102/)
+  assert.match(result.text, /手动/)
+})
+
+it('cicd_approve 必须 confirm，且 pass/refuse 走 runner', async () => {
+  let called: { action?: string } | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      approve: async (_project: Project, opts: { action?: string }) => {
+        called = opts
+        return {
+          record: {
+            runId: 'r1',
+            pipeline: 'deploy',
+            title: 'deploy',
+            type: 'yunxiao',
+            status: 'running',
+            startedAt: new Date().toISOString(),
+          },
+          note: '已通过人工卡点：阶段「审批」任务「人工卡点」',
+        }
+      },
+    },
+    options: {},
+  })
+  const approveTool = stubTools.find((t: ToolSpec) => t.name === 'cicd_approve')
+
+  await assert.rejects(
+    () => approveTool.execute({ runId: 'r1', action: 'pass' }, execFor()),
+    /confirm/,
+  )
+  const result = await approveTool.execute({ runId: 'r1', action: 'pass', confirm: true }, execFor())
+  assert.equal(called?.action, 'pass')
+  assert.match(result.text, /已通过人工卡点/)
+  await assert.rejects(
+    () => approveTool.execute({ runId: 'r1', action: 'maybe', confirm: true }, execFor()),
+    /pass 或 refuse/,
+  )
+})
+
+it('cicd_cancel 取消后抑制等待提醒', async () => {
+  const muted: string[] = []
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      cancel: async () => ({
+        runId: 'r1',
+        pipeline: 'ping',
+        title: 'ping',
+        type: 'shell',
+        status: 'canceled',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    muteWaiting: (runId: string) => muted.push(runId),
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_cancel')
+    .execute({ runId: 'r1' }, execFor())
+  assert.match(result.text, /canceled/)
+  assert.deepEqual(muted, ['r1'])
+})
+
+it('cicd_vars 只列变量名，不输出值', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([
+        { key: 'NPM_TOKEN', encrypted: true, masked: true },
+        { key: 'VITE_BASE_URL', description: '前端地址', runningConfig: true },
+      ]),
+    },
+    options: {},
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_vars')
+    .execute({ pipeline: 'multibranch' }, execFor())
+  assert.match(result.text, /NPM_TOKEN/)
+  assert.match(result.text, /值不可读/)
+  assert.match(result.text, /VITE_BASE_URL/)
+  assert.match(result.text, /前端地址/)
+  assert.doesNotMatch(result.text, /secret|pt-/)
+})
+
+it('cicd_vars：shell 流水线明确报错', async () => {
+  await assert.rejects(
+    () => tool('cicd_vars').execute({ pipeline: 'ping' }, execFor()),
+    /只有云效/,
+  )
+})
+
+it('cicd_run 触发后提示运行变量（未覆盖用默认值）', async () => {
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+        variables: [
+          { key: 'VITE_BASE_URL' },
+          { key: 'NPM_TOKEN', encrypted: true },
+        ],
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'multibranch' }, execFor())
+  assert.match(result.text, /运行变量：2 个/)
+  assert.match(result.text, /使用平台默认值/)
+  assert.match(result.text, /cicd_vars/)
+  assert.doesNotMatch(result.text, /secret|pt-/)
+})
+
+it('cicd_run runConfig:true 弹运行配置，变量值进参数但不回显', async () => {
+  let dialogOptions: { variables: Array<{ key: string }> } | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'A' }, { key: 'B', encrypted: true }]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'multibranch',
+          title: '多分支',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          overriddenVariables: ['A'],
+        }
+      },
+    },
+    options: {},
+    ctx: { tools: { register() {} } },
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({ envs: { A: 'value-a' }, comment: '发版' })
+    },
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'multibranch', runConfig: true }, execFor())
+  assert.equal(dialogOptions?.variables.length, 2)
+  assert.deepEqual(captured, { envs: { A: 'value-a' }, comment: '发版' })
+  assert.match(result.text, /变量覆盖：A/)
+  assert.doesNotMatch(result.text, /value-a/)
+})
+
+it('cicd_run 把用户话里的备注预填到弹窗，弹窗留空时保留', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({ envs: {} })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', comment: '预发布版本' }, execFor())
+  assert.equal(dialogOptions?.comment, '预发布版本')
+  assert.equal(captured?.comment, '预发布版本')
+})
+
+it('cicd_run 弹窗清空备注时不再发送', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.resolve({ envs: {}, comment: '' }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', comment: '预发布版本' }, execFor())
+  assert.equal(captured?.comment, undefined)
+})
+
+it('cicd_run 把 envs 预填到弹窗并原样提交', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'TEST_NAME' }]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+          overriddenVariables: ['TEST_NAME'],
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({ envs: { TEST_NAME: '30' } })
+    },
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', envs: { TEST_NAME: 30 } }, execFor())
+  assert.deepEqual(dialogOptions?.envs, { TEST_NAME: '30' })
+  assert.deepEqual(captured?.envs, { TEST_NAME: '30' })
+  assert.match(result.text, /变量覆盖：TEST_NAME/)
+})
+
+it('cicd_run 弹窗清空变量时删除覆盖', async () => {
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'TEST_NAME' }]),
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.resolve({ envs: {} }),
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', envs: { TEST_NAME: 30 } }, execFor())
+  assert.equal(captured?.envs, undefined)
+})
+
+it('cicd_run 按配置 runConfig:true 弹窗；runConfig:false 且无可确认分支时不弹', async () => {
+  let calls = 0
+  const makeTools = () => buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'auto-config',
+        title: '自动运行配置',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => {
+      calls++
+      return Promise.resolve({ envs: {} })
+    },
+  })
+  const open = makeTools()
+  await open.find((t: ToolSpec) => t.name === 'cicd_run').execute({ pipeline: 'auto-config' }, execFor())
+  assert.equal(calls, 1)
+
+  const skip = makeTools()
+  await skip.find((t: ToolSpec) => t.name === 'cicd_run').execute({ pipeline: 'auto-config', runConfig: false }, execFor())
+  assert.equal(calls, 1)
+})
+
+it('cicd_run runConfig 只支持云效流水线', async () => {
+  await assert.rejects(
+    () => tool('cicd_run').execute({ pipeline: 'ping', runConfig: true }, execFor()),
+    /只支持云效/,
+  )
+})
+
+it('cicd_run 运行配置取消时不触发', async () => {
+  let ran = false
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async () => {
+        ran = true
+        throw new Error('should not run')
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.reject(new Error('用户取消了本次运行')),
+  })
+  await assert.rejects(
+    () => stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+      .execute({ pipeline: 'multibranch', runConfig: true }, execFor()),
+    /取消/,
+  )
+  assert.equal(ran, false)
+})
+
+it('cicd_run runConfig + preview：只回配置，不回显变量值', async () => {
+  let ran = false
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'SECRET' }]),
+      run: async () => {
+        ran = true
+        return {}
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: false, previous: [] }),
+    runDialog: () => Promise.resolve({ envs: { SECRET: 'super-secret' }, comment: '备注' }),
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'multibranch', runConfig: true, preview: true }, execFor())
+  assert.equal(ran, false)
+  assert.match(result.text, /变量覆盖：SECRET/)
+  assert.match(result.text, /preview/)
+  assert.doesNotMatch(result.text, /super-secret/)
+})
+
+it('cicd_run runConfig 但 client 不在线：分支回退，变量用默认值并提示', async () => {
+  let branchDialogCalled = false
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([{ key: 'A' }]),
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'multibranch',
+        title: '多分支',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: true, previous: ['main'] }),
+    branchDialog: async () => {
+      branchDialogCalled = true
+      return { branches: ['main'], kept: ['main'], removed: [], added: [] }
+    },
+  })
+  const result = await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'multibranch', runConfig: true }, execFor())
+  assert.equal(branchDialogCalled, true)
+  assert.match(result.text, /运行配置弹窗不可用/)
+  assert.match(result.text, /使用云效默认值/)
+})
+
+it('cicd_run runConfig:false 只跳过变量，分支仍然确认', async () => {
+  let dialogOptions: RunConfigOptions | undefined
+  let captured: Record<string, unknown> | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => {
+        throw new Error('runConfig:false 时不应读取变量')
+      },
+      run: async (_project: Project, _name: string, opts: { params?: Record<string, unknown> }) => {
+        captured = opts.params
+        return {
+          runId: 'r1',
+          pipeline: 'auto-config',
+          title: '自动运行配置',
+          type: 'yunxiao',
+          status: 'running',
+          startedAt: new Date().toISOString(),
+        }
+      },
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: true, previous: ['main'] }),
+    runDialog: (options: RunConfigOptions) => {
+      dialogOptions = options
+      return Promise.resolve({
+        branches: { branches: ['main'], kept: ['main'], removed: [], added: [] },
+        envs: {},
+      })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', runConfig: false, branches: ['main'] }, execFor())
+  assert.equal(dialogOptions?.showBranches, true)
+  assert.deepEqual(dialogOptions?.variables, [])
+  assert.equal(dialogOptions?.showComment, false)
+  assert.deepEqual(dialogOptions?.previous, ['main'])
+  assert.deepEqual(captured, { branches: ['main'], branchMode: 'replace' })
+})
+
+it('cicd_run 开了 runConfig 时显式 branches 只做预选，不跳过确认', async () => {
+  let called = false
+  let dialogOptions: RunConfigOptions | undefined
+  const stubTools = buildToolDefinitions({
+    defineTool,
+    runner: {
+      variables: async () => ([]),
+      run: async () => ({
+        runId: 'r1',
+        pipeline: 'auto-config',
+        title: '自动运行配置',
+        type: 'yunxiao',
+        status: 'running',
+        startedAt: new Date().toISOString(),
+      }),
+    },
+    options: {},
+    branchState: async () => ({ isBranchMode: true, previous: ['main'] }),
+    runDialog: (options: RunConfigOptions) => {
+      called = true
+      dialogOptions = options
+      return Promise.resolve({
+        branches: { branches: ['feat-x'], kept: [], removed: [], added: ['feat-x'] },
+        envs: {},
+      })
+    },
+  })
+  await stubTools.find((t: ToolSpec) => t.name === 'cicd_run')
+    .execute({ pipeline: 'auto-config', branches: ['feat-x'] }, execFor())
+  assert.equal(called, true)
+  assert.equal(dialogOptions?.showBranches, true)
+  assert.deepEqual(dialogOptions?.previous, ['feat-x'])
+})
+
+it('runner：envs 值不落运行记录，只保留变量名', async () => {
+  const project = resolveProject(execFor(), {})
+  const run = await runner.run(project, 'ping', { params: { envs: { SECRET: 'super-secret' }, comment: '备注' } })
+  const raw = readFileSync(join(project.runsDir, `${run.runId}.json`), 'utf8')
+  assert.doesNotMatch(raw, /super-secret/)
+  assert.deepEqual(run.overriddenVariables, ['SECRET'])
+  assert.equal(run.params?.comment, '备注')
+  assert.equal((run.params as Record<string, unknown>)?.envs, undefined)
 })

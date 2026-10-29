@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { it } from 'vitest'
-import { askBranches, describeChoice, parseBranchAnswer, parseKeepAnswer } from '../src/prompt.js'
+import { askBranches, describeChoice, parseBranchAnswer, parseKeepAnswer, parseRunConfigAnswer } from '../src/prompt.js'
 
 it('parseBranchAnswer：移除勾选 + 输入框新增（逗号/空格/全角逗号）', () => {
   const choice = parseBranchAnswer(['a', 'b', 'c'], {
@@ -106,4 +106,46 @@ it('parseKeepAnswer：取消勾选 = 移除', () => {
 it('parseKeepAnswer：全部取消且无新增 = 空（由调用方报错）', () => {
   const choice = parseKeepAnswer(['a'], { selected: [] })
   assert.deepEqual(choice.branches, [])
+})
+
+it('parseRunConfigAnswer：变量只认白名单，空值不覆盖', () => {
+  const choice = parseRunConfigAnswer(
+    { previous: ['main'], showBranches: true, variables: [{ key: 'A' }, { key: 'B', encrypted: true }] },
+    { selected: ['main'], custom: 'feat', envs: { A: '1', B: '', UNKNOWN: 'x' }, comment: '发版' },
+  )
+  assert.deepEqual(choice.branches?.branches, ['main', 'feat'])
+  assert.deepEqual(choice.envs, { A: '1' })
+  assert.equal(choice.comment, '发版')
+})
+
+it('parseRunConfigAnswer：不显示分支时不要求分支；变量全空 = 不覆盖；备注清空 = 空串', () => {
+  const choice = parseRunConfigAnswer(
+    { previous: [], showBranches: false, variables: [{ key: 'A' }] },
+    { envs: {}, comment: '  ' },
+  )
+  assert.equal(choice.branches, undefined)
+  assert.deepEqual(choice.envs, {})
+  assert.equal(choice.comment, '')
+
+  const untouched = parseRunConfigAnswer(
+    { previous: [], showBranches: false, variables: [] },
+    { envs: {}, comment: '预发布版本' },
+  )
+  assert.equal(untouched.comment, '预发布版本')
+
+  const absent = parseRunConfigAnswer(
+    { previous: [], showBranches: false, variables: [] },
+    { envs: {} },
+  )
+  assert.equal(absent.comment, undefined)
+})
+
+it('parseRunConfigAnswer：显示分支但全取消时报错', () => {
+  assert.throws(
+    () => parseRunConfigAnswer(
+      { previous: ['main'], showBranches: true, variables: [] },
+      { selected: [], custom: '' },
+    ),
+    /至少要有一个运行分支/,
+  )
 })

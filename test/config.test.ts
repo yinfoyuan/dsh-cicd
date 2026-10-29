@@ -139,6 +139,22 @@ it('云效：branchMode 只接受 append / replace / off', () => {
   assert.throws(() => loadConfig(bad, { fresh: true }), /branchMode/)
 })
 
+it('云效：runConfig 默认 false，显式 true 才开启', () => {
+  const off = writeConfig({
+    pipelines: {
+      deploy: { type: 'yunxiao', organizationId: 'org1', pipelineId: '1' },
+    },
+  }, 'run-config-off.json')
+  assert.equal(yunxiao(loadConfig(off, { fresh: true })).runConfig, false)
+
+  const on = writeConfig({
+    pipelines: {
+      deploy: { type: 'yunxiao', organizationId: 'org1', pipelineId: '1', runConfig: true },
+    },
+  }, 'run-config-on.json')
+  assert.equal(yunxiao(loadConfig(on, { fresh: true })).runConfig, true)
+})
+
 it('环境元数据：environment / tier 可选，tier 默认 other', () => {
   const file = writeConfig({
     pipelines: {
