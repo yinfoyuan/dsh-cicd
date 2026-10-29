@@ -29,7 +29,7 @@
 | Y5 | 同流水线并发保护（已有 running 时提示/需 force） | `latestPipelineRun` / `ListPipelineRuns` | ⬜ |
 | Y19 | 运行变量发现与提示：读流水线变量定义，`cicd_vars` 展示、`cicd_run` 提示模型询问 | `pipelineConfig.settings.globalParams` | ✅（只读副本） |
 | Y20 | 运行配置弹窗（`runConfig`）：分支 + 变量 + 备注，空值用默认，值不落盘 | 复用 client overlay + `/dsh-cicd/branch/*` | ✅ |
-| Y21 | 等待人工确认识别与提醒（`SWITCH_MANUAL`）：toast + followUp 唤醒 + `cicd_status` 展示 | 云效 run 详情 `stageInfo.status` | ✅ |
+| Y21 | 等待人工确认识别与提醒（`SWITCH_MANUAL`）：toast + followUp 唤醒 + `cicd_status` 展示 | 云效 run 详情 `stageInfo.status` | ✅（run 929 实测：等待 → 通过 → 成功） |
 
 **Y1 细节**（已按官方文档确认形状，`params` 是 JSON 字符串；工具面已实现
 `cicd_run` 的 `comment` / `envs` / `tags` / `repoBranches` / `artifacts`，命名参数优先）：
