@@ -103,6 +103,17 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
     里判断「什么时候用/传什么」时，描述用户的**诉求/意图**（例如「用户要求运行结束后继续处理」），
     不要写成「用户说 X 才…」的触发词清单。示例可以留，但必须标成示例（「例如」），不能变成条件。
     `pnpm check` 会扫描这几份模型面向文案里的固定话术写法。
+13. **真实身份信息一律不进仓库**：组织 ID / 流水线 ID / 内网地址 / token 之外，**客户的真实业务名
+    （公司名、项目名、内部系统名）、流水线标题、运行编号（run 972 这类）也不要写进**
+    `docs/`（尤其是 ADR 的「实机验证」段）、`test/` fixture、commit message、CHANGELOG。
+    一律用占位：`示例-管理端`、`example-saas`、`run N`；实机结论只描述**形态与信号**
+    （例如「3 阶段流水线、阶段 `SWITCH_MANUAL` + `ExecutePipelineJobRun`」），不披露是谁的流水线。
+    提交前自查（关键词换成本次接触到的业务名）：
+    ```powershell
+    git grep -n -I -E '<业务名关键词>' -- .
+    git log -S'<业务名关键词>' --oneline --all   # 历史里也别留
+    ```
+    已经发布到 npm 的版本无法覆盖，只能发新版本；发现泄露先停下来同步，不要自己决定改写历史。
 
 ## 想改什么，从哪下手
 
@@ -186,5 +197,6 @@ pnpm check        # lint + typecheck + build + test + 文档检查（node script
 - [ ] `docs/tools.md` 与工具面一致（脚本校验）
 - [ ] 面向模型的判断条件用意图描述，没有「用户说 X 才…」这类固定话术（脚本校验）
 - [ ] 没有把 token、内网地址、运行记录提交进去
+- [ ] 没有把真实业务名/流水线标题/运行编号写进 docs、测试 fixture、commit message（见约定 13）
 - [ ] `lib/` 不进 git（已 gitignore，发布时自动构建）
 
