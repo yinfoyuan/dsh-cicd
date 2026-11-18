@@ -134,6 +134,10 @@ export interface RunRecord {
   overriddenVariables?: string[]
   /** 正在等待人工操作（例如人工卡点）；空/未设置为不等待。 */
   waiting?: string
+  /** 正在排队等执行机（不是等人）；空/未设置表示没在排队。 */
+  queued?: string
+  /** 人工卡点被拒绝的说明（运行会因此失败）；用于终态通知点明原因。 */
+  gateRefused?: string
   /** 是否通过 `cicd_cancel` 取消（用户主动取消）：watcher 保留终态 toast，但不再唤醒模型。 */
   canceledByUser?: boolean
   /** 触发时流水线的环境展示名/层级（元数据，用于展示）。 */
@@ -163,6 +167,8 @@ export interface PollResult {
   progress?: string
   /** 等待人工操作（人工卡点等）的说明；空表示不等待。 */
   waiting?: string
+  /** 排队等执行机的说明（不是等人）；空表示没在排队。 */
+  queued?: string
   buildUrl?: string
   exitCode?: number
   /** 云效多分支模式：本次运行集成的分支。 */

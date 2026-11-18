@@ -153,9 +153,12 @@
 
 - 只返回当前 `status/progress/note`，**不等待**；已结束的运行直接返回终态；
 - 在等人工确认（如人工卡点）时，`progress` 会显示 `（等待人工确认）`，并多一行 `waiting: …`；
+- 在**排队等执行机**（并发流水线占着构建机）时，`progress` 显示 `（等待调度）`，并多一行 `queued: 阶段「…」`
+  ——这是排队，不是等人，插件不会唤醒模型；
 - 后台跟踪（`cicd_run` 触发后）：阶段变化推 `⏳`；分支集成**冲突暂停**时推
   `⚠️ 需要手动合并：请在云效解决冲突后点「Conflict Resolved」`；等待人工确认时推
-  `⏸ 等待人工确认：…`，处理完再推 `▶ 人工确认已完成`；结束推 `✅/❌`；
+  `⏸ 等待人工确认：…`，处理完再推 `▶ 人工确认已完成`；排队超过约 90 秒会补一条
+  `⏳ … 已排队 N：在等执行机`（只一次）；结束推 `✅/❌`；
   失败时若日志里有「合并冲突 / 用户已取消」会在提示里点明；
 - 想看历史提示，点会话头部右上角的消息图标。
 
@@ -207,7 +210,10 @@
 | `confirm` | boolean | ✅ | 必须是 `true`：表示已获得用户明确同意 |
 
 - 人工卡点（job action `PassPipelineValidate`）：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，拒绝**没有**原因字段；
-- 手动触发阶段（阶段 `SWITCH_MANUAL` / job action `ExecutePipelineJobRun`）：
+- 拒绝会终止运行：工具返回前先推一条 `⛔ … 已拒绝人工卡点：阶段「…」任务「…」，运行将终止`，
+  之后的终态失败提示写成 `❌ … 执行失败 · 已拒绝人工卡点：阶段「…」任务「…」，运行因此终止`，
+  `cicd_status` 里也会多一行 `gateRefused:`，避免看着像构建自己挂了；
+- 手动触发阶段（阶段 `SWITCH_MANUAL` 且 job action `ExecutePipelineJobRun`）：
   - `pass`：`POST .../pipelineRuns/{runId}/jobs/{jobId}/start` 开始；
   - `refuse`：云效没有阶段级拒绝接口，等价为**取消整个运行**（`PUT .../runs/{runId}`）；
 - 权限要求「流水线运行任务」读写；当前 token 无权限时会明确报错；

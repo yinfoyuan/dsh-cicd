@@ -4,7 +4,7 @@ import type { Pipeline, RunRecord, YunxiaoPipeline } from '../src/types.js'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { afterAll, beforeAll, it } from 'vitest'
-import { createProvider as createProviderTyped, findManualGate, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, summarizeStages, triggerModeLabel, waitingFor } from '../src/providers.js'
+import { createProvider as createProviderTyped, findManualGate, getYunxiaoBranchState, isRetryable, mergeBranches, parsePipelineVariables, parseSourceBranches, pendingConflict, queuedFor, summarizeStages, triggerModeLabel, waitingFor } from '../src/providers.js'
 
 /** 测试里的流水线只写用到的字段，这里按 Pipeline 收窄。 */
 function createProvider(pipeline: Partial<Pipeline>): ReturnType<typeof createProviderTyped> {
@@ -431,6 +431,81 @@ it('云效：SWITCH_MANUAL 识别为等待人工确认', async () => {
   }
   assert.match(waitingFor(run), /审批/)
   assert.equal(waitingFor({ stages: [] }), '')
+})
+
+it('云效：阶段调度瞬间的等待态不当人工卡点（run 972 回归）', () => {
+  // 云效在阶段刚被调度的一两秒里会报等待态，普通 job 也可能带 ExecutePipelineJobRun；
+  // 这类状态不是人工卡点，不能推「等待人工确认」。
+  const queued = {
+    stages: [
+      { name: '分支集成', stageInfo: { status: 'SUCCESS', jobs: [{ id: 1, status: 'SUCCESS' }] } },
+      {
+        name: '命令',
+        stageInfo: {
+          status: 'WAITING',
+          jobs: [{ id: 2, name: '执行命令', status: 'WAITING', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+        },
+      },
+    ],
+  }
+  assert.equal(findManualGate(queued), null)
+  assert.equal(waitingFor(queued), '')
+  assert.doesNotMatch(summarizeStages(queued), /等待人工确认/)
+
+  // 同样的 action，阶段确实是 SWITCH_MANUAL（手动触发阶段）才算等待点。
+  const manual = {
+    stages: [{
+      name: '命令',
+      stageInfo: {
+        status: 'SWITCH_MANUAL',
+        jobs: [{ id: 3, name: '执行命令', status: 'WAITING', actions: [{ type: 'ExecutePipelineJobRun', disable: false }] }],
+      },
+    }],
+  }
+  assert.equal(findManualGate(manual)?.kind, 'start')
+  assert.match(waitingFor(manual), /命令/)
+})
+
+it('云效：run 975 实机帧（阶段 WAITING 等执行机）不报卡点', () => {
+  // 2026-11-18 10:16:59 从云效抓到的真实响应：阶段「命令」在排队等构建机，
+  // 阶段/job 都是 WAITING、actions 只有 StopPipelineJobRun，运行级状态也是 WAITING。
+  const frame = {
+    status: 'WAITING',
+    stages: [
+      { name: '分支集成', stageInfo: { status: 'SUCCESS', jobs: [{ id: 'Git分支管理器', name: 'Git分支管理器', status: 'SUCCESS', actions: [{ type: 'LogPipelineJobRun' }] }] } },
+      { name: '命令', stageInfo: { status: 'WAITING', jobs: [{ id: '执行命令', name: '执行命令', status: 'WAITING', actions: [{ type: 'StopPipelineJobRun' }] }] } },
+      { name: '部署', stageInfo: { status: 'INIT', jobs: [{ id: '主机部署', name: '主机部署', status: 'INIT', actions: [] }] } },
+    ],
+  }
+  assert.equal(findManualGate(frame), null)
+  assert.equal(waitingFor(frame), '')
+  // 排队要说「等待调度」，不能是「等待人工确认」。
+  assert.match(summarizeStages(frame), /阶段 2\/3 · 命令（等待调度）/)
+  // 排队是独立信号：cicd_status 里能看到「在等哪个阶段」，不该混进 waiting。
+  assert.equal(queuedFor(frame), '阶段「命令」')
+  assert.equal(queuedFor({ stages: [{ name: '部署', stageInfo: { status: 'RUNNING', jobs: [{ status: 'RUNNING' }] } }] }), '')
+})
+
+it('云效：审批卡点的阶段也报 WAITING，按 actions 判人等人（run 977 实机帧）', () => {
+  // 2026-11-18 10:47:53 抓到的真实审批卡点：阶段「新阶段」/ 任务「人工卡点」，
+  // 阶段与 job 状态都是 WAITING（和排队撞），只能靠 Pass/Refuse action 区分。
+  const frame = {
+    status: 'WAITING',
+    stages: [
+      { name: '分支集成', stageInfo: { status: 'SUCCESS', jobs: [{ id: 1, name: 'Git分支管理器', status: 'SUCCESS', actions: [{ type: 'LogPipelineJobRun' }] }] } },
+      { name: '新阶段', stageInfo: { status: 'WAITING', jobs: [{ id: 12, name: '人工卡点', status: 'WAITING', actions: [{ type: 'PassPipelineValidate', disable: false }, { type: 'RefusePipelineValidate', disable: false }] }] } },
+      { name: '命令', stageInfo: { status: 'INIT', jobs: [{ id: 13, name: '执行命令', status: 'INIT', actions: [] }] } },
+      { name: '部署', stageInfo: { status: 'INIT', jobs: [{ id: 14, name: '主机部署', status: 'INIT', actions: [] }] } },
+    ],
+  }
+  const gate = findManualGate(frame)
+  assert.equal(gate?.kind, 'validate')
+  assert.equal(gate?.jobId, 12)
+  assert.equal(gate?.canApprove, true)
+  assert.equal(waitingFor(frame), '阶段「新阶段」')
+  // 同一个阶段不能同时被说成「排队等执行机」。
+  assert.equal(queuedFor(frame), '')
+  assert.match(summarizeStages(frame), /阶段 2\/4 · 新阶段（等待人工确认）/)
 })
 
 it('云效：运行历史映射状态/耗时/触发方式', async () => {

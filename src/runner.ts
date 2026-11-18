@@ -373,10 +373,16 @@ export class Runner {
       saveRecord(project.runsDir, canceled)
       return { record: canceled, note: out.note ?? '' }
     }
+    // 拒绝人工卡点后运行会失败：把「是谁让它失败的」记在记录上，终态通知据此点明原因。
+    if (action === 'refuse') {
+      const refused: RunRecord = { ...refreshed, gateRefused: out.note || '人工卡点被拒绝' }
+      saveRecord(project.runsDir, refused)
+      return { record: refused, note: out.note ?? '' }
+    }
     return { record: refreshed, note: out.note ?? '' }
   }
 
-  /** 统一生成取消记录：带标记、结束时间，并清掉 waiting/progress 里的等待态。 */
+  /** 统一生成取消记录：带标记、结束时间，并清掉 waiting/queued 里的等待态。 */
   #canceledRecord(record: RunRecord, note?: string, progress?: string): RunRecord {
     const next: RunRecord = {
       ...record,
@@ -387,6 +393,7 @@ export class Runner {
       ...(progress ? { progress } : {}),
     }
     delete next.waiting
+    delete next.queued
     return next
   }
 
@@ -548,6 +555,10 @@ export class Runner {
         next.waiting = out.waiting
       else
         delete next.waiting
+      if (out.queued)
+        next.queued = out.queued
+      else
+        delete next.queued
       if (out.branches?.length)
         next.branches = out.branches
       if (out.buildUrl)
@@ -569,6 +580,7 @@ export class Runner {
         next.canceledByUser = true
         next.finishedAt = next.finishedAt ?? new Date().toISOString()
         delete next.waiting
+        delete next.queued
       }
       saveRecord(project.runsDir, next)
       return next
@@ -603,6 +615,7 @@ export class Runner {
         record.finishedAt = record.finishedAt ?? new Date().toISOString()
       }
       delete record.waiting
+      delete record.queued
     }
     if (record.status === 'canceled')
       return record

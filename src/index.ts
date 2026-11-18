@@ -68,14 +68,15 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
   const runDialog = (dialogOptions: RunConfigOptions): Promise<RunConfigChoice> | undefined =>
     branchBroker.hasClient() ? branchBroker.askRunConfig(dialogOptions) : undefined
 
+  // 提示通道：client toast（通知历史）+ 可选桌宠。watcher 与工具（如拒绝卡点）共用一份。
+  const notice = (text: string, project?: string, runId?: string): void => {
+    branchBroker.notify(text, 'info', project, runId)
+    if (notify && readGlobalSettings().pet)
+      void notify.say(text).catch(() => {})
+  }
+
   // 触发后的后台跟踪：阶段变化/结束主动提示，不阻塞对话。
-  const watcher = new RunWatcher(runner, {
-    notice: (text, project, runId) => {
-      branchBroker.notify(text, 'info', project, runId)
-      if (notify && readGlobalSettings().pet)
-        void notify.say(text).catch(() => {})
-    },
-  })
+  const watcher = new RunWatcher(runner, { notice })
   ctx.effect?.(() => () => watcher.dispose())
 
   let tools: ToolSpec[]
@@ -89,6 +90,7 @@ export function apply(ctx: PluginContext, config: PluginOptions = {}): void {
       runDialog,
       watch: (project, record, hooks) => watcher.watch(project, record, hooks),
       muteWaiting: runId => watcher.muteWaiting(runId),
+      notice,
     })
   }
   catch (error) {

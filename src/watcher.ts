@@ -8,11 +8,14 @@ import type { Project, RunRecord, WatchHooks } from './types.js'
  * `followUp: true` 时终态调用 `onTerminal`、首次检测到合并冲突调用 `onConflict`，
  * 由调用方唤醒模型继续后续动作。
  */
+import { noticeLabel } from './format.js'
 import { durationText } from './runner.js'
 
 const FIRST_DELAY_MS = 5_000
 const MAX_DELAY_MS = 15_000
 const MAX_WATCH_MS = 45 * 60_000
+/** 排队超过这个时长就补一条「在等执行机」的交代（只提示一次）。 */
+const QUEUE_NUDGE_MS = 90_000
 
 /** RunWatcher 只依赖 runner 的两个查询方法，测试可以传最小桩。 */
 export interface WatcherRunner {
@@ -26,8 +29,7 @@ export interface RunWatcherOptions {
 }
 
 function label(record: RunRecord): string {
-  const env = record.environment ? `[${record.environment}] ` : ''
-  return `${env}${record.title || record.pipeline}`
+  return noticeLabel(record)
 }
 
 /** 从失败日志里识别「合并冲突 / 被取消」这类需要人工处理的情况。 */
@@ -70,6 +72,11 @@ export class RunWatcher {
     let lastLogCheck = 0
     let conflictNotified = false
     let waitingNotified = false
+    /** 上一轮看到、还没被下一轮确认的等待位置（过滤阶段调度瞬间的抖动）。 */
+    let waitingCandidate = ''
+    /** 本轮排队从什么时候开始（0 = 没在排队），以及「排队久了」是否已提示过。 */
+    let queuedSince = 0
+    let queuedNudged = false
     let hint = ''
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- 平台协议/解析流程分支多，拆函数反而降低可读性
@@ -101,13 +108,20 @@ export class RunWatcher {
               : `❓ ${label(current)} 状态丢失`
 
         if (current.status === 'failed') {
-          try {
-            const log = await this.#runner.logs(project, { runId: current.runId, tailLines: 120, maxChars: 12_000 })
-            hint = failureHint(log)
-            if (hint)
-              text += ` · ${hint}`
+          // 卡点是用户自己拒绝的：先点明这一点，别让「执行失败」看起来像构建挂了。
+          if (current.gateRefused) {
+            hint = `${current.gateRefused}，运行因此终止`
+            text += ` · ${hint}`
           }
-          catch {}
+          else {
+            try {
+              const log = await this.#runner.logs(project, { runId: current.runId, tailLines: 120, maxChars: 12_000 })
+              hint = failureHint(log)
+              if (hint)
+                text += ` · ${hint}`
+            }
+            catch {}
+          }
         }
         try {
           this.#options.notice(text, project.root, current.runId)
@@ -128,7 +142,11 @@ export class RunWatcher {
       if (waitingText) {
         // 等待人工操作时不要再刷「阶段运行中」，只提示一次「在等人」。
         lastProgress = current.progress ?? lastProgress
-        if (!waitingNotified && !this.#mutedWaiting.has(record.runId)) {
+        // 云效在阶段刚被调度的一两秒里会短暂报等待态（实机 run 972）：同一次等待要连续两轮
+        // 都看到才提示/唤醒；真正的卡点会一直挂着，这种抖动只活一个轮询周期。
+        const confirmed = waitingCandidate !== '' && waitingCandidate === waitingText
+        waitingCandidate = waitingText
+        if (confirmed && !waitingNotified && !this.#mutedWaiting.has(record.runId)) {
           waitingNotified = true
           try {
             this.#options.notice(
@@ -144,12 +162,15 @@ export class RunWatcher {
           catch {}
         }
       }
-      else if (waitingNotified) {
-        waitingNotified = false
-        try {
-          this.#options.notice(`▶ ${label(current)} 人工确认已完成，继续运行`, project.root, current.runId)
+      else {
+        waitingCandidate = ''
+        if (waitingNotified) {
+          waitingNotified = false
+          try {
+            this.#options.notice(`▶ ${label(current)} 人工确认已完成，继续运行`, project.root, current.runId)
+          }
+          catch {}
         }
-        catch {}
       }
 
       if (!waitingText && current.progress && current.progress !== lastProgress) {
@@ -158,6 +179,28 @@ export class RunWatcher {
           this.#options.notice(`⏳ ${label(current)} · ${current.progress}`, project.root, current.runId)
         }
         catch {}
+      }
+
+      // 排队等执行机：不是终态也不是等人，但久等要有个交代，否则用户看着「没动静」。
+      if (current.queued) {
+        if (!queuedSince) {
+          queuedSince = Date.now()
+        }
+        else if (!queuedNudged && Date.now() - queuedSince >= QUEUE_NUDGE_MS) {
+          queuedNudged = true
+          try {
+            this.#options.notice(
+              `⏳ ${label(current)} 已排队 ${durationText(Date.now() - queuedSince)}（${current.queued} 等执行机）：并发流水线会占用构建机，通常会在前面那条结束后继续，不是等人操作。`,
+              project.root,
+              current.runId,
+            )
+          }
+          catch {}
+        }
+      }
+      else {
+        queuedSince = 0
+        queuedNudged = false
       }
 
       // 分支集成阶段可能「暂停等人工合并」：日志里出现冲突标记时主动提示一次。

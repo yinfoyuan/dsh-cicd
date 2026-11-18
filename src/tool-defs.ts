@@ -22,7 +22,7 @@ import type {
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { ConfigError } from './config.js'
-import { conflictWakeText, environmentLabel, fmtTime, followUpText, ICON, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
+import { conflictWakeText, environmentLabel, fmtTime, followUpText, ICON, noticeLabel, pipelineSummaryLine, recordText, waitingWakeText } from './format.js'
 import { resolveProject } from './project.js'
 import { askBranches, describeChoice } from './prompt.js'
 import { getYunxiaoBranchState, triggerModeLabel } from './providers.js'
@@ -153,9 +153,11 @@ export interface BuildToolDeps {
   watch?: (project: Project, record: RunRecord, hooks?: WatchHooks) => void
   /** 用户取消后抑制在途的「等待人工确认」提醒；测试可不传。 */
   muteWaiting?: (runId: string) => void
+  /** 推一条提示（客户端 toast / 桌宠）；工具侧主动告知这种「用户动作导致的结局」时用，测试可不传。 */
+  notice?: (text: string, project?: string, runId?: string) => void
 }
 
-export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, runDialog, watch, muteWaiting }: BuildToolDeps): ToolSpec[] {
+export function buildToolDefinitions({ defineTool, runner, options, ctx, branchState, branchDialog, runDialog, watch, muteWaiting, notice }: BuildToolDeps): ToolSpec[] {
   const tools: ToolSpec[] = []
 
   tools.push(defineTool({
@@ -608,7 +610,7 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
 
   tools.push(defineTool({
     name: 'cicd_status',
-    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态；在等人工确认（例如人工卡点）时输出会带 waiting。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
+    description: '查询某次运行的状态，只查一次、不阻塞、不等待；不传 runId 时查该流水线最近一次。HTTP 类流水线会实时回源查询平台状态；在等人工确认（例如人工卡点）时输出会带 waiting，在排队等执行机（不是等人）时带 queued。不要在 cicd_run 之后循环调用它等结果（结束会由后台 toast 通知）。',
     parameters: {
       runId: { type: 'string', description: 'cicd_run 返回的运行 id' },
       pipeline: { type: 'string', description: '不传 runId 时，用流水线名查最近一次' },
@@ -652,6 +654,12 @@ export function buildToolDefinitions({ defineTool, runner, options, ctx, branchS
           action,
           confirm: true,
         })
+        // 拒绝会直接终止运行：先推一条说明原因的提示，免得后面那条「执行失败」看着像构建挂了。
+        if (action === 'refuse') {
+          const why = note || '人工卡点被拒绝'
+          const tail = record.status === 'canceled' ? '，运行已取消' : '，运行将终止'
+          notice?.(`⛔ ${noticeLabel(record)} ${why}${tail}`, project.root, record.runId)
+        }
         return {
           text: [
             note || `${action === 'pass' ? '已通过' : '已拒绝'}人工卡点`,

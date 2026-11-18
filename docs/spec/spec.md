@@ -80,6 +80,10 @@
 - HTTP 类运行在终态时补算 `durationMs`（`finishedAt - startedAt`）。
 - **等待人工操作不是第六种状态**：run 仍是 `running`；云效阶段状态（如 `SWITCH_MANUAL`）
   等写入 `RunRecord.waiting`，用于展示与通知，不进 `status`。
+- **排队等执行机也不是状态**：同样是过程态，run 仍是 `running`；写成 `RunRecord.queued`
+  （值形如 `阶段「命令」`），`progress` 显示 `（等待调度）`。平台原值留在 `rawStatus`
+  （云效 run 级排队时是 `WAITING`），所以「要有码」的需求由 `rawStatus` 满足，
+  不要为排队往 `status` 加第 6 个值。
 
 ### 5.4 后台跟踪与通知（核心）
 
@@ -105,7 +109,7 @@
 - 同一 runId 的并发等待共用一次轮询。
 - 等待结果包含 `polls / elapsedMs / budgetSec / budgetSource / lastError`。
 - 云效运行显示阶段进度（`阶段 2/2 · 部署（运行中）`）；等待人工确认时显示
-  `阶段 2/3 · 审批（等待人工确认）`。
+  `阶段 2/3 · 审批（等待人工确认）`。阶段在排队等执行机（`WAITING`）不算等人，显示为「等待调度」。
 
 ### 5.5 日志
 
@@ -210,9 +214,19 @@
 - **分支集成冲突**：云效把「合并冲突，请解决后继续」写在 job `result` 里，`poll` 会转成
   `record.note`；watcher 检测到 note（或日志里的 `Merge conflicted, job paused`）时推一条
   `⚠️ 检测到合并冲突，运行在等你手动处理：请在云效解决冲突后点「Conflict Resolved」`（每次运行只推一次）。
-- **等待人工确认**：云效阶段 `SWITCH_MANUAL`（人工卡点）或任务等待状态会在 `poll` 里转成
-  `record.waiting`；watcher 首次检测到时推 `⏸ 等待人工确认：阶段「审批」…`，
+- **等待人工确认**：只有平台**明确在等人**时才写 `record.waiting`——人工卡点（job action
+  `PassPipelineValidate`）或阶段状态 `SWITCH_MANUAL` / `WAITING_MANUAL`；
+  **`WAITING`（排队、等执行机调度）不算**，否则阶段刚启动的那一两秒会被误报成卡点
+  （实机：`阶段 2/3 · 命令` 启动瞬间误报，一个轮询周期后自愈）。
+  watcher 要**连续两轮**看到同一处等待才推 `⏸ 等待人工确认：阶段「审批」…`（过滤调度抖动），
   处理完成（waiting 消失）再推 `▶ 人工确认已完成，继续运行`；每次运行各提示一次。
+- **排队等执行机（不是等人）**：阶段状态 `WAITING` 时 `poll` 写 `record.queued`（`阶段「命令」`），
+  `progress` 显示 `（等待调度）`；watcher 只推阶段进度 `⏳`，排队满 90 秒再补一条
+  「已排队 N（等执行机，并发流水线占着构建机）」并且**只补一次**，不唤醒模型
+  （这是平台排队，不是用户要处理的卡点）。
+- **`WAITING` 不能单独判人等人**：人工卡点阶段的阶段/job 状态同样是 `WAITING`（实机实测），
+  和排队撞。`waiting` / `queued` / `progress` 三处都必须以「有没有 `PassPipelineValidate`
+  一类审批 action」来区分，否则同一个审批阶段会同时显示「等待人工确认」和「排队等执行机」。
 - **没有等待工具**：`cicd_run` 的输出明确要求「本轮到此结束」，禁止 `Start-Sleep`、
   循环 `cicd_status` 或任何轮询；结果由后台 toast 通知，用户之后主动问进度时再用 `cicd_status`。
 - **followUp 唤醒**：`followUp: true` 时终态（用户主动取消除外）会调用 `agent.followup()`，
@@ -321,14 +335,21 @@
 ### 5.22 人工卡点审批（cicd_approve）
 
 - 前置：运行是 `running`，且能找到等待点——分两类：
-  - **人工卡点**：job `actions[]` 含 `PassPipelineValidate`；
-  - **手动触发阶段**：job `actions[]` 含 `ExecutePipelineJobRun`（阶段状态 `SWITCH_MANUAL` 兜底）。
+  - **人工卡点**：job `actions[]` 含 `PassPipelineValidate`（审批门独有，出现即认定，阶段状态可能是 `RUNNING`）；
+  - **手动触发阶段**：阶段状态 `SWITCH_MANUAL` **且** job `actions[]` 含 `ExecutePipelineJobRun`；
+    只看 action 不够——普通 job 在待调度时也会带这个动作（实机误报来源）；
+    阶段状态 `SWITCH_MANUAL` / `WAITING_MANUAL` 本身也作为兜底（没有可点 action 时按 `start` 报）。
 - 工具必须 `confirm: true` 且用户明确同意；`action` 只能 `pass` / `refuse`。
 - 人工卡点：`POST .../pipelineRuns/{runId}/jobs/{jobId}/pass|refuse`，无 body，返回裸 `true`；拒绝没有原因字段。
 - 手动触发阶段：`pass` 调 `POST .../pipelineRuns/{runId}/jobs/{jobId}/start` 开始；
   `refuse` 云效没有阶段级拒绝接口，等价为**取消整个运行**（`PUT .../runs/{runId}`）。
 - 权限是「流水线运行任务 · 读写」；`action.disable=true` 表示当前 token 无操作权，要明确报错。
 - 操作成功后刷新一次状态；后台跟踪继续；**任何情况下都不得自动操作**。
+- **拒绝要能自解释**：`refuse` 成功后在记录上写 `gateRefused`（例如
+  `已拒绝人工卡点：阶段「新阶段」任务「人工卡点」`），工具返回前推一条
+  `⛔ … 已拒绝人工卡点：阶段「…」任务「…」，运行将终止`；随后平台把运行标成 `failed` 时，终态提示写成
+  `❌ … 执行失败（耗时）· 已拒绝人工卡点：阶段「…」任务「…」，运行因此终止`（不再去翻日志找原因），
+  `cicd_status` 展示 `gateRefused:`。手动触发阶段的 `refuse` 仍按取消处理（记录 `canceled`）。
 
 ## 6. 数据模型
 

@@ -201,44 +201,76 @@ function tokenOf(pipeline: { tokenEnv: string }, env: EnvMap | undefined): strin
 /* ------------------------------- 云效 Flow ------------------------------ */
 const STAGE_DONE = new Set(['SUCCESS', 'SKIP', 'SKIPPED', 'IGNORED'])
 const STAGE_FAIL = new Set(['FAIL', 'FAILED', 'ERROR'])
-/** 阶段/任务在等人工操作（人工卡点等）；云效用 SWITCH_MANUAL 表示「等待手动切换」。 */
-const STAGE_WAITING = new Set(['SWITCH_MANUAL', 'WAITING', 'WAITING_MANUAL', 'MANUAL', 'PAUSED', 'SUSPEND'])
-const JOB_WAITING = new Set(['WAITING', 'PAUSED', 'MANUAL'])
+/**
+ * 阶段明确在等人工操作（人工卡点 / 手动触发）：云效用 SWITCH_MANUAL 表示「等待手动切换」。
+ * 别把 `WAITING`（普通排队、等执行机调度）算进来：阶段刚被调度的一两秒就是那个值，
+ * 拿它当「等人工」会误报（实机 run 972：阶段「命令」启动瞬间被误判成人工卡点）。
+ */
+const STAGE_MANUAL = new Set(['SWITCH_MANUAL', 'WAITING_MANUAL', 'MANUAL'])
+/** 暂停/挂起：要人恢复，但没有可点的审批动作，只在展示上算「等人工」，不当卡点。 */
+const STAGE_SUSPENDED = new Set(['PAUSED', 'SUSPEND'])
+/** 阶段在排队等执行机（多分支/并发常见），展示成「等待调度」，不是等人。 */
+const STAGE_EXECUTOR_WAIT = new Set(['WAITING'])
+/** 还没开始的状态：一律当「未开始」，不能因为「不是成功也不是失败」就算运行中。 */
+const STAGE_PENDING = new Set(['INIT', 'PENDING', 'CREATED', 'NOT_STARTED', ''])
+/** job 级别：MANUAL/PAUSED 要人处理；`WAITING` 多是等调度，不算等人。 */
+const JOB_MANUAL = new Set(['MANUAL', 'PAUSED'])
 
-type StageState = 'pending' | 'running' | 'failed' | 'success' | 'waiting'
+type StageState = 'pending' | 'queued' | 'running' | 'failed' | 'success' | 'waiting'
 
 /**
  * 从云效 run 详情里抽出「现在跑到哪个阶段」，给等待/状态输出用。
  * 阶段状态由它下面的 jobs 推断（云效 stage 本身常常没有 status 字段）。
  */
 export function summarizeStages(run: unknown): string {
-  const detail = run as YunxiaoRun
-  const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
-  if (stages.length === 0)
+  const list = stageStates(run)
+  if (list.length === 0)
     return ''
 
-  const list = stages.map((stage, index) => {
+  const active = list.find(s => s.state === 'failed')
+    ?? list.find(s => s.state === 'waiting')
+    ?? list.find(s => s.state === 'running')
+    ?? list.find(s => s.state === 'queued')
+    ?? list.find(s => s.state === 'pending')
+    ?? list[list.length - 1]
+  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始', waiting: '等待人工确认', queued: '等待调度' }
+  return `阶段 ${active.index + 1}/${list.length} · ${active.name}（${label[active.state]}）`
+}
+
+interface StageSnapshot {
+  index: number
+  name: string
+  state: StageState
+}
+
+/** 每个阶段现在是什么状态（展示与排队/等人判定共用一份推断）。 */
+function stageStates(run: unknown): StageSnapshot[] {
+  const detail = run as YunxiaoRun
+  const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
+
+  return stages.map((stage, index) => {
     const jobs: YunxiaoJob[] = Array.isArray(stage?.stageInfo?.jobs) ? stage.stageInfo.jobs : []
     const statuses: string[] = jobs.map(job => String(job?.status ?? '').toUpperCase()).filter(Boolean)
     const declared = String(stage?.stageInfo?.status ?? '').toUpperCase()
     let state: StageState = 'pending'
     if (STAGE_FAIL.has(declared) || statuses.some(s => STAGE_FAIL.has(s)))
       state = 'failed'
-    else if (STAGE_WAITING.has(declared) || statuses.some(s => JOB_WAITING.has(s)))
+    else if (STAGE_MANUAL.has(declared) || STAGE_SUSPENDED.has(declared) || statuses.some(s => JOB_MANUAL.has(s)) || hasApprovalAction(stage))
       state = 'waiting'
+    else if (STAGE_EXECUTOR_WAIT.has(declared) || statuses.some(s => STAGE_EXECUTOR_WAIT.has(s)))
+      state = 'queued'
     else if (STAGE_DONE.has(declared) || (statuses.length > 0 && statuses.every(s => STAGE_DONE.has(s))))
       state = 'success'
-    else if (declared === 'RUNNING' || statuses.some(s => !STAGE_DONE.has(s) && !STAGE_FAIL.has(s)))
+    else if (declared === 'RUNNING' || statuses.some(s => !STAGE_DONE.has(s) && !STAGE_FAIL.has(s) && !STAGE_PENDING.has(s)))
       state = 'running'
     return { index, name: stage?.name ?? `阶段${index + 1}`, state }
   })
+}
 
-  const active = list.find(s => s.state === 'failed')
-    ?? list.find(s => s.state === 'waiting')
-    ?? list.find(s => s.state === 'running')
-    ?? list[list.length - 1]
-  const label: Record<StageState, string> = { running: '运行中', failed: '失败', success: '成功', pending: '未开始', waiting: '等待人工确认' }
-  return `阶段 ${active.index + 1}/${list.length} · ${active.name}（${label[active.state]}）`
+/** 正在排队等执行机的阶段（不是等人）：返回 `阶段「命令」`，没有返回空串。 */
+export function queuedFor(run: unknown): string {
+  const stage = stageStates(run).find(item => item.state === 'queued')
+  return stage ? `阶段「${stage.name}」` : ''
 }
 
 export interface ManualGate {
@@ -256,53 +288,80 @@ const START_ACTION = /^ExecutePipelineJobRun$/i
 
 /**
  * 找人工卡点/手动阶段：
- * - job 的 `actions[]` 含 PassPipelineValidate → 人工卡点（/pass /refuse）；
- * - job 的 `actions[]` 含 ExecutePipelineJobRun → 手动触发阶段（/start）；
- * - 兜底：阶段状态 `SWITCH_MANUAL`。
+ * - job 的 `actions[]` 含 PassPipelineValidate → 人工卡点（/pass /refuse）；这组动作只有审批门才有，
+ *   阶段状态可能是 RUNNING，出现即可认定；
+ * - job 的 `actions[]` 含 ExecutePipelineJobRun **且阶段状态是 SWITCH_MANUAL** → 手动触发阶段（/start）。
+ *   只看 action 不够：普通 job 在待调度的一两秒里也会带这个动作（实机 run 972 的误报来源）；
+ * - 兜底：阶段状态就是 SWITCH_MANUAL / WAITING_MANUAL。
  */
 export function findManualGate(run: unknown): ManualGate | null {
   const detail = run as YunxiaoRun
   const stages: YunxiaoStage[] = Array.isArray(detail?.stages) ? detail.stages : []
 
   for (const stage of stages) {
-    for (const job of stage?.stageInfo?.jobs ?? []) {
-      const actions = job.actions ?? []
-      const validate = actions.find(item => GATE_ACTION.test(String(item?.type ?? '')))
-      if (validate && job.id !== undefined) {
-        return {
-          stage: stage?.name ?? '未命名阶段',
-          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
-          jobId: job.id,
-          kind: 'validate',
-          canApprove: validate.disable !== true,
-        }
-      }
-      const start = actions.find(item => START_ACTION.test(String(item?.type ?? '')))
-      if (start && job.id !== undefined) {
-        return {
-          stage: stage?.name ?? '未命名阶段',
-          job: job?.name ?? job?.jobSign ?? `job-${job.id}`,
-          jobId: job.id,
-          kind: 'start',
-          canApprove: start.disable !== true,
-        }
-      }
-    }
+    const gate = approvalGate(stage)
+    if (gate)
+      return gate
   }
-
   for (const stage of stages) {
-    if (!STAGE_WAITING.has(String(stage?.stageInfo?.status ?? '').toUpperCase()))
-      continue
-    const job = (stage?.stageInfo?.jobs ?? []).find(item => item.id !== undefined)
-    return {
-      stage: stage?.name ?? '未命名阶段',
-      job: job?.name ?? job?.jobSign ?? '人工卡点',
-      jobId: job?.id ?? '',
-      kind: 'start',
-      canApprove: true,
+    if (STAGE_MANUAL.has(stageStatus(stage)))
+      return manualStartGate(stage)
+  }
+  return null
+}
+
+function stageStatus(stage: YunxiaoStage): string {
+  return String(stage?.stageInfo?.status ?? '').toUpperCase()
+}
+
+function jobLabel(job?: YunxiaoJob): string {
+  return job?.name ?? job?.jobSign ?? (job?.id !== undefined ? `job-${job.id}` : '')
+}
+
+/** 该阶段有没有可点的审批动作（人工卡点）。展示层与 findManualGate 共用同一个判据。 */
+function hasApprovalAction(stage: YunxiaoStage): boolean {
+  return (stage?.stageInfo?.jobs ?? []).some(job => (job.actions ?? []).some(item => GATE_ACTION.test(String(item?.type ?? ''))))
+}
+
+/** 审批门：动作只出现在真正的人工卡点上。 */
+function approvalGate(stage: YunxiaoStage): ManualGate | null {
+  for (const job of stage?.stageInfo?.jobs ?? []) {
+    const action = (job.actions ?? []).find(item => GATE_ACTION.test(String(item?.type ?? '')))
+    if (action && job.id !== undefined) {
+      return {
+        stage: stage?.name ?? '未命名阶段',
+        job: jobLabel(job),
+        jobId: job.id,
+        kind: 'validate',
+        canApprove: action.disable !== true,
+      }
     }
   }
   return null
+}
+
+/** 手动触发阶段：阶段已经是 SWITCH_MANUAL，找可点的 start；没有动作时按阶段本身报。 */
+function manualStartGate(stage: YunxiaoStage): ManualGate {
+  for (const job of stage?.stageInfo?.jobs ?? []) {
+    const action = (job.actions ?? []).find(item => START_ACTION.test(String(item?.type ?? '')))
+    if (action && job.id !== undefined) {
+      return {
+        stage: stage?.name ?? '未命名阶段',
+        job: jobLabel(job),
+        jobId: job.id,
+        kind: 'start',
+        canApprove: action.disable !== true,
+      }
+    }
+  }
+  const job = (stage?.stageInfo?.jobs ?? []).find(item => item.id !== undefined)
+  return {
+    stage: stage?.name ?? '未命名阶段',
+    job: jobLabel(job) || '人工卡点',
+    jobId: job?.id ?? '',
+    kind: 'start',
+    canApprove: true,
+  }
 }
 
 /**
@@ -636,6 +695,7 @@ function yunxiao(pipeline: YunxiaoPipeline, env: EnvMap): Provider {
         note: pendingConflict(obj) || obj?.statusText,
         progress: summarizeStages(obj),
         waiting: waitingFor(obj) || undefined,
+        queued: queuedFor(obj) || undefined,
         branches: parseSourceBranches(obj?.globalParams),
       }
     },

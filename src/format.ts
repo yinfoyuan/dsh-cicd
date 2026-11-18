@@ -30,6 +30,12 @@ export function environmentLabel(value: { environment?: string, tier?: Environme
   return label ? `[${label}]` : ''
 }
 
+/** 通知里的运行标签：`[env] 标题`（toast / 桌宠 / 通知历史共用一份措辞）。 */
+export function noticeLabel(record: RunRecord): string {
+  const env = record.environment ? `[${record.environment}] ` : ''
+  return `${env}${record.title || record.pipeline}`
+}
+
 export function pipelineSummaryLine(pipeline: Pipeline, latest: RunRecord | null): string {
   const lock = pipeline.confirm ? ' 🔒' : ''
   const env = environmentLabel(pipeline)
@@ -132,6 +138,10 @@ export function recordText(record: RunRecord): string {
     lines.push(`progress:  ${record.progress}`)
   if (record.waiting)
     lines.push(`waiting: ${record.waiting}`)
+  if (record.queued)
+    lines.push(`queued:  ${record.queued}（排队等执行机，不是人工卡点）`)
+  if (record.gateRefused)
+    lines.push(`gateRefused: ${record.gateRefused}（这是这次失败的直接原因）`)
   if (record.url)
     lines.push(`url:     ${record.url}`)
   if (record.note)

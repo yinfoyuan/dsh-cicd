@@ -27,6 +27,7 @@
 | [0018](./0018-remove-cicd-wait.md) | 删除 `cicd_wait`，触发后本轮结束（禁止 sleep/轮询） | Accepted | 2026-10-23 |
 | [0019](./0019-followup-wake.md) | 用户要求在触发之外继续跟进时，用 `agent.followup()` 唤醒模型 | Accepted | 2026-10-23 |
 | [0020](./0020-no-auto-gitignore.md) | 不自动写入用户的 `.gitignore`，忽略与否由用户决定 | Accepted | 2026-10-23 |
+| [0021](./0021-waiting-detection-signals.md) | 「等待人工确认」只认显式人工信号（`SWITCH_MANUAL` / 审批 action），且连续两轮确认 | Accepted | 2026-11-18 |
 
 ## 模板
 
