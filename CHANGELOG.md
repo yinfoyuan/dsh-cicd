@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0](https://github.com/yinfoyuan/dsh-cicd/compare/v0.3.0...v0.4.0) (2026-11-18)
+
+### Features
+
+* 人工等待只认显式信号，补齐排队与拒绝提示 ([a94556f](https://github.com/yinfoyuan/dsh-cicd/commit/a94556f262a1eb0eb2b5d4303f2247c346d4ba3a))
+
 ## [0.3.0](https://github.com/yinfoyuan/dsh-cicd/compare/v0.2.0...v0.3.0) (2026-10-29)
 
 ### Features
